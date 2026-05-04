@@ -1,0 +1,22 @@
+[package]
+name = "smt160-driver"
+version = "0.1.0"
+edition = "2024"
+description = "A fixed-point, async-friendly driver for the SMT160 temperature sensor"
+
+[dependencies]
+fixed = "1.24.0"
+embedded-hal = "1.0.0"
+embedded-hal-async = "1.0.0"
+defmt = { version = "0.3", optional = true }
+
+[dev-dependencies]
+cortex-m = "0.7.7"
+cortex-m-rtic = "1.1.4"
+stm32f1xx-hal = { version = "0.11.0", features = ["rt", "stm32f103"] }
+esp-hal = { version = "1.1.0" }
+defmt-rtt = "0.4.0"
+panic-probe = { version = "0.3.1", features = ["print-defmt"] }
+
+[features]
+default = ["defmt"]
