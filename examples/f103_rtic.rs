@@ -23,9 +23,9 @@ use stm32f1xx_hal::{
     prelude::*,
     pac,
 };
-use rtic::app;
+use rtic;
 
-#[app(device = pac, peripherals = true)]
+#[rtic::app(device = pac, peripherals = true)]
 mod app {
     use super::*;
     use fixed::types::I16F16;
@@ -54,13 +54,15 @@ mod app {
 
         // Initialize clock tree to 72MHz for maximum timing resolution.
         // PCLK1 must be 36MHz (72MHz/2) for standard APB1 timing.
-        let clocks = rcc.cfgr
-            .use_hse(8.MHz())
-            .sysclk(72.MHz())
-            .pclk1(36.MHz())
-            .freeze(&mut flash.acr);
+        let mut rcc = rcc.freeze(
+            stm32f1xx_hal::rcc::Config::hse(8.MHz())
+                .sysclk(72.MHz())
+                .pclk1(36.MHz()),
+            &mut flash.acr,
+        );
+        let _clocks = rcc.clocks;
 
-        let mut gpioa = cx.device.GPIOA.split();
+        let mut gpioa = cx.device.GPIOA.split(&mut rcc);
         
         // PA0 (TIM2_CH1) as floating input for the sensor signal.
         let _pa0 = gpioa.pa0.into_floating_input(&mut gpioa.crl);
@@ -70,20 +72,20 @@ mod app {
         // --- Timer Configuration ---
         // PSC = 72 - 1 = 71. Since TIM2 is on APB1, it receives 72MHz (36MHz * 2).
         // This gives us exactly 1 tick per microsecond.
-        tim2.psc.write(|w| w.psc().bits(71));
-        tim2.arr.write(|w| w.arr().bits(0xFFFF));
+        tim2.psc().write(|w| unsafe { w.psc().bits(71) });
+        tim2.arr().write(|w| unsafe { w.arr().bits(0xFFFF) });
 
         // CC1 setup: 
         // 1. Map Channel 1 to TI1.
         // 2. Enable capture on Rising Edge (default).
         tim2.ccmr1_input().modify(|_, w| w.cc1s().ti1());
-        tim2.ccer.modify(|_, w| w.cc1e().set_bit().cc1p().clear_bit());
+        tim2.ccer().modify(|_, w| w.cc1e().set_bit().cc1p().clear_bit());
         
         // Enable CC1 capture interrupt and Update (overflow) interrupt.
-        tim2.dier.modify(|_, w| w.cc1ie().set_bit().uie().set_bit());
+        tim2.dier().modify(|_, w| w.cc1ie().set_bit().uie().set_bit());
         
         // Start the timer counter.
-        tim2.cr1.modify(|_, w| w.cen().set_bit());
+        tim2.cr1().modify(|_, w| w.cen().set_bit());
 
         (
             Shared { current_temp: None },
@@ -102,25 +104,25 @@ mod app {
     #[task(binds = TIM2, local = [decoder, tim2, overflows], shared = [current_temp])]
     fn tim2_irq(mut cx: tim2_irq::Context) {
         let tim2 = cx.local.tim2;
-        let sr = tim2.sr.read();
+        let sr = tim2.sr().read();
 
         // 1. Handle Counter Overflow
         // We track the upper 16 bits of our virtual 32-bit timestamp.
         if sr.uif().bit_is_set() {
-            tim2.sr.modify(|_, w| w.uif().clear_bit());
+            tim2.sr().modify(|_, w| w.uif().clear_bit());
             *cx.local.overflows = cx.local.overflows.wrapping_add(1);
         }
 
         // 2. Handle Input Capture Event
         if sr.cc1if().bit_is_set() {
-            let capture = tim2.ccr1.read().ccr1().bits();
+            let capture = tim2.ccr1().read().ccr().bits();
             
             // Construct virtual 32-bit timestamp in microseconds.
             // Formula: (overflows * 2^16) + capture_ticks
             let timestamp_us = ((*cx.local.overflows as u64) << 16) | (capture as u64);
             
             // Resolve current edge polarity from the CC1P bit.
-            let is_rising = tim2.ccer.read().cc1p().bit_is_clear();
+            let is_rising = tim2.ccer().read().cc1p().bit_is_clear();
             
             // Push the edge to the decoder state machine.
             // Returns Ok(Some(temp)) only when stability and jitter checks pass.
@@ -133,7 +135,7 @@ mod app {
             }
 
             // Toggle capture polarity to catch the next opposite edge (Falling <-> Rising).
-            tim2.ccer.modify(|_, w| w.cc1p().bit(!is_rising));
+            tim2.ccer().modify(|_, w| w.cc1p().bit(!is_rising));
         }
     }
 

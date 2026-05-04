@@ -5,7 +5,6 @@
 
 use crate::config::*;
 use crate::Smt160Error;
-use fixed::macros::fixed;
 use fixed::types::I16F16;
 
 /// A passive, constant-time state machine for decoding SMT160 timestamps.
@@ -110,7 +109,7 @@ impl Smt160Decoder {
                 // --- Jitter Filtering ---
                 // Compare new reading with the average of the last two.
                 if self.history_len == 2 {
-                    let avg = (self.history[0] + self.history[1]) / fixed!(2.0: I16F16);
+                    let avg = (self.history[0] + self.history[1]) / I16F16::from_num(2);
                     let diff = if temp > avg { temp - avg } else { avg - temp };
 
                     if diff > MAX_JITTER {
@@ -152,5 +151,55 @@ impl Smt160Decoder {
         }
 
         Ok(None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_normal_operation() {
+        let mut decoder = Smt160Decoder::new();
+        let period = 1000;
+        let high = 438;
+        let mut ts = 0;
+        for _ in 0..6 {
+            let _ = decoder.push_edge(true, ts);
+            ts += high;
+            let _ = decoder.push_edge(false, ts);
+            ts += period - high;
+        }
+        let res = decoder.push_edge(true, ts).unwrap();
+        assert!(res.is_some());
+        let temp = res.unwrap();
+        assert!(temp > 25.0 && temp < 25.2);
+    }
+
+    #[test]
+    fn test_frequency_validation() {
+        let mut decoder = Smt160Decoder::new();
+        let _ = decoder.push_edge(true, 0);
+        let _ = decoder.push_edge(false, 1000);
+        let res = decoder.push_edge(true, 10000);
+        assert!(matches!(res, Err(Smt160Error::FrequencyOutOfRange(_))));
+    }
+
+    #[test]
+    fn test_jitter_filtering() {
+        let mut decoder = Smt160Decoder::new();
+        let mut ts = 0;
+        for _ in 0..7 {
+            let _ = decoder.push_edge(true, ts);
+            ts += 438;
+            let _ = decoder.push_edge(false, ts);
+            ts += 562;
+        }
+        let _ = decoder.push_edge(true, ts);
+        ts += 461;
+        let _ = decoder.push_edge(false, ts);
+        ts += 539;
+        let res = decoder.push_edge(true, ts);
+        assert!(matches!(res, Err(Smt160Error::HighJitter)));
     }
 }

@@ -12,8 +12,6 @@
 //! - **Passive Decoder**: A state machine that can be driven by interrupts or polling.
 //! - **Failsafe Mechanisms**: Includes jitter filtering, frequency watchdogs, and stability counters.
 
-#![no_std]
-
 pub mod config;
 pub mod decoder;
 pub mod driver_async;
