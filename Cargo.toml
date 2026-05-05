@@ -21,3 +21,12 @@ panic-probe = { version = "0.3.1", features = ["print-defmt"] }
 
 [features]
 default = ["defmt"]
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+debug = true
+lto = true
