@@ -1,6 +1,6 @@
-# SMT160-Driver
+# SMT160-Driver (High-Accuracy Edition)
 
-A high-precision, fixed-point, and async-friendly Rust driver for the **SMT160** temperature sensor.
+A high-precision, fixed-point, and async-friendly Rust driver for the **SMT160** temperature sensor, targeting **0.05°C precision**.
 
 [![Crates.io](https://img.shields.io/crates/v/smt160-driver.svg)](https://crates.io/crates/smt160-driver)
 [![Docs.rs](https://docs.rs/smt160-driver/badge.svg)](https://docs.rs/smt160-driver)
@@ -11,18 +11,19 @@ The SMT160 is a high-accuracy temperature sensor that outputs a Pulse Width Modu
 
 **DC = 0.320 + 0.00470 * t**
 
-This driver provides a robust, `no_std` implementation that handles the complexities of timing-critical PWM decoding on microcontrollers.
+This driver provides a robust, `no_std` implementation that handles the complexities of timing-critical PWM decoding with industrial-grade reliability.
 
 ## Key Features
 
-- **Fixed-Point Arithmetic**: Uses `I16F16` for all calculations, ensuring deterministic performance without floating-point hardware requirements.
-- **Passive Logic Core**: The decoder is a state machine that accepts timestamps, making it compatible with both Interrupt-driven (RTIC) and Polled architectures.
-- **Async Support**: Native `embedded-hal-async` implementation for modern async/await firmware.
+- **High Precision (0.05°C Target)**: Optimized for high-resolution timers (up to 72MHz capture) with sub-microsecond timestamping.
+- **Fixed-Point Engine**: Uses `I32F32` for intermediate calculations and `I16F16` for results, ensuring deterministic performance without an FPU.
+- **Clock-Aware Decoder**: The passive logic core supports custom clock frequencies, allowing for raw tick-based decoding with zero rounding loss.
+- **Async Native**: Supports `embedded-hal-async` with native Rust 2024 async-in-trait support.
 - **Industrial Failsafes**:
-  - **Jitter Filtering**: Discards readings that deviate more than 1.5°C from the rolling average.
-  - **Frequency Watchdog**: Detects sensor failures or signal degradation by monitoring frequency shifts (>10%).
-  - **Stability Counter**: Requires 5 consecutive valid pulses before yielding the first result.
-  - **Thermal Bounds**: Validates readings against the SMT160 industrial range (-45°C to 130°C).
+  - **16-Sample Moving Average**: Smooths readings while maintaining responsiveness.
+  - **Outlier Rejection**: Discards noise spikes (>2.0°C from rolling average).
+  - **Critical Section Polling**: Provides jitter-free measurement for timing-sensitive blocking applications.
+  - **Thermal Bounds**: Validates readings against the SMT160 range (-45°C to 130°C).
 
 ## Installation
 
@@ -31,44 +32,57 @@ Add this to your `Cargo.toml`:
 ```toml
 [dependencies]
 smt160-driver = "0.1.0"
-fixed = "1.24.0"
+fixed = { version = "1.27.0", features = ["az"] }
 ```
 
-## Quick Start (Async)
+## Usage
+
+### High-Accuracy Async (e.g. ESP32/RTOS)
 
 ```rust
+use smt160_driver::decoder::Smt160Decoder;
 use smt160_driver::driver_async::Smt160Async;
 
-// Assume 'pin' implements embedded_hal_async::digital::Wait
-// Assume 'timer' returns u64 microseconds
-let mut sensor = Smt160Async::new(pin, || timer.now_us());
+// 1. Configure decoder for your timer frequency (e.g., 1MHz for microseconds)
+let decoder = Smt160Decoder::with_clock(1);
 
+// 2. Initialize driver with pin and timestamp source
+let mut sensor = Smt160Async::new(pin, || timer.now_us(), decoder);
+
+// 3. Read temperature (averaged over 16 samples)
 match sensor.read_temperature().await {
-    Ok(temp) => println!("Temperature: {} °C", temp),
-    Err(e) => eprintln!("Error: {}", e),
+    Ok(temp) => println!("Temperature: {} °C", temp.to_num::<f32>()),
+    Err(e) => eprintln!("Error: {:?}", e),
 }
 ```
 
-## RTIC Integration
+### High-Accuracy Blocking (e.g. STM32 Bluepill)
 
-For high-precision applications, it is recommended to use the `Smt160Decoder` inside a Timer Input Capture interrupt. See the full example in `examples/f103_rtic.rs`.
+For maximum precision, use the `read_temperature_precision` method which disables interrupts during a single cycle measurement.
 
 ```rust
-// Inside TIM interrupt
-if is_capture_event {
-    let timestamp = capture_register();
-    if let Ok(Some(temp)) = decoder.push_edge(is_rising, timestamp) {
-        shared_temp.lock(|t| *t = Some(temp));
-    }
+use smt160_driver::decoder::Smt160Decoder;
+use smt160_driver::driver_blocking::Smt160Blocking;
+
+// Use 72MHz ticks for ~0.003°C resolution
+let decoder = Smt160Decoder::with_clock(72);
+let mut sensor = Smt160Blocking::new(pin, || dwt.cycle_count() as u64, decoder);
+
+match sensor.read_temperature_precision() {
+    Ok(temp) => info!("Precise Temp: {} °C", temp.to_num::<f32>()),
+    Err(e) => error!("Error: {:?}", e),
 }
 ```
 
-## Architecture
+## Hardware Guide: Resolution vs Clock
 
-The project is structured into three layers:
-1. **`decoder.rs`**: The pure logic engine. No I/O.
-2. **`driver_async.rs`**: High-level async wrapper for `embedded-hal-async`.
-3. **`i2c_telemetry.rs`**: Thread-safe structures for sharing data between sensor tasks and communication interfaces.
+To achieve the **0.05°C accuracy** target, your capture clock must be high enough to resolve small duty cycle shifts:
+
+| Clock Frequency | Resolution | Target Met? |
+|-----------------|------------|-------------|
+| 1 MHz (1µs)     | ~0.210°C   | ❌ No        |
+| 8 MHz (125ns)   | ~0.026°C   | ✅ Yes       |
+| 72 MHz (13ns)   | ~0.003°C   | ✅ Yes (Ultra) |
 
 ## License
 

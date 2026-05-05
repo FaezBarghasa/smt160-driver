@@ -3,14 +3,26 @@
 //! # SMT160 Temperature Sensor Driver
 //!
 //! A high-integrity, `no_std`, async-friendly driver for the SMT160 temperature sensor.
-//! This driver uses fixed-point math (`I16F16`) for deterministic performance on 
-//! microcontrollers and includes advanced jitter filtering and safety checks.
 //!
-//! ## Features
+//! ## High-Accuracy Edition
+//! This driver is designed to achieve **0.05°C precision** by utilizing high-resolution
+//! hardware timers (up to 72MHz) and 64-bit fixed-point arithmetic (`I32F32`).
+//!
+//! ### The SMT160 Transfer Function
+//! The sensor encodes temperature in the duty cycle (DC) of a PWM signal:
+//! `DC = 0.320 + 0.00470 * T`
+//!
+//! Rearranged for temperature calculation:
+//! `T = (DC - 0.320) / 0.00470`
+//!
+//! This driver uses the multiplicative inverse of `0.00470` (approx `212.766`) to 
+//! avoid expensive division on platforms without a floating-point unit (FPU).
+//!
+//! ### Features
 //! - **Fixed-Point Engine**: No floating point usage, making it ideal for Cortex-M0/M3/M4.
-//! - **Async Native**: Supports `embedded-hal-async` for non-blocking operation.
-//! - **Passive Decoder**: A state machine that can be driven by interrupts or polling.
-//! - **Failsafe Mechanisms**: Includes jitter filtering, frequency watchdogs, and stability counters.
+//! - **Clock-Aware Decoder**: Supports raw timer ticks for sub-microsecond resolution.
+//! - **Async Native**: Uses native Rust 2024 async-in-trait support.
+//! - **Industrial Failsafes**: Includes outlier rejection, frequency watchdogs, and 16-sample filtering.
 
 pub mod config;
 pub mod decoder;

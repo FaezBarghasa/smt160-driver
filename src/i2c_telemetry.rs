@@ -4,6 +4,10 @@ use core::sync::atomic::{AtomicU32, Ordering};
 use fixed::types::I16F16;
 
 /// Thread-safe telemetry container for sharing temperature data across tasks.
+/// 
+/// This uses an `AtomicU32` to store the fixed-point bits of the temperature,
+/// allowing it to be safely shared between a high-priority sensor task
+/// and a lower-priority communication task (like I2C).
 pub struct Smt160Telemetry {
     temp_bits: AtomicU32,
 }

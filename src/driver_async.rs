@@ -7,6 +7,16 @@ use embedded_hal_async::digital::Wait;
 use fixed::types::I16F16;
 
 /// Async Wrapper for SMT160 utilizing native async traits.
+/// 
+/// This driver uses `embedded-hal-async` to wait for pin edges and calculates
+/// temperature using the provided `Smt160Decoder`.
+/// 
+/// ### Example
+/// ```rust
+/// let decoder = Smt160Decoder::with_clock(1); // 1MHz clock
+/// let mut sensor = Smt160Async::new(pin, || timer.now_us(), decoder);
+/// let temp = sensor.read_temperature().await?;
+/// ```
 pub struct Smt160Async<P, T> 
 where 
     P: Wait + InputPin,
@@ -23,6 +33,10 @@ where
     T: Fn() -> u64,
 {
     /// Creates a new async driver.
+    /// 
+    /// - `pin`: Implements `Wait` and `InputPin`.
+    /// - `get_time`: Closure returning the current timestamp (units must match `decoder`).
+    /// - `decoder`: Pre-configured `Smt160Decoder`.
     pub fn new(pin: P, get_time: T, decoder: Smt160Decoder) -> Self {
         Self {
             pin,

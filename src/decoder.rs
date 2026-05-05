@@ -15,8 +15,7 @@ pub struct Smt160Decoder {
 }
 
 impl Smt160Decoder {
-    /// Creates a new decoder instance with 16-sample buffer.
-    /// Default clock is 1MHz (timestamps in microseconds).
+    /// Creates a new decoder instance assuming timestamps are in **microseconds** (1MHz clock).
     pub const fn new() -> Self {
         Self {
             last_rise: None,
@@ -28,14 +27,17 @@ impl Smt160Decoder {
         }
     }
 
-    /// Creates a new decoder instance with a custom clock frequency.
+    /// Creates a new decoder instance with a custom clock frequency in MHz.
+    /// 
+    /// Use this for high-precision capture (e.g., `72` for a 72MHz STM32 timer).
+    /// This allows passing raw timer ticks to `push_edge` without losing resolution.
     pub const fn with_clock(mhz: u32) -> Self {
         let mut s = Self::new();
         s.clock_mhz = mhz;
         s
     }
 
-    /// Resets the internal state.
+    /// Resets the internal state and circular buffer.
     pub fn reset(&mut self) {
         self.last_rise = None;
         self.last_fall = None;
@@ -44,7 +46,11 @@ impl Smt160Decoder {
     }
 
     /// Process a new edge timestamp.
-    /// Units depend on the clock frequency set (default is microseconds).
+    /// 
+    /// The units of `timestamp` should match the `clock_mhz` configured.
+    /// For example, if configured with 72MHz, `timestamp` should be raw 72MHz ticks.
+    /// 
+    /// Returns `Ok(Some(temperature))` when a new averaged reading is ready (after 16 samples).
     pub fn push_edge(&mut self, is_rising: bool, timestamp: u64) -> Result<Option<I16F16>, Smt160Error> {
         if is_rising {
             if let (Some(prev_rise), Some(prev_fall)) = (self.last_rise, self.last_fall) {

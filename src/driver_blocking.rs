@@ -54,8 +54,15 @@ where
     }
 
     /// High-precision reading using a tight loop within a critical section.
-    /// This minimizes jitter from interrupts during the measurement of 3 transitions.
-    /// This will block all other tasks/interrupts until 3 transitions are detected!
+    /// 
+    /// This method minimizes jitter by:
+    /// 1. Entering a `critical_section` to disable interrupts.
+    /// 2. Performing a tight while-loop polling the GPIO pin.
+    /// 3. Capturing timestamps immediately upon edge detection.
+    /// 
+    /// **WARNING**: This method blocks all other interrupts and tasks for at least
+    /// one full sensor cycle (approx 0.25ms to 1ms). Use with caution in 
+    /// real-time systems.
     pub fn read_temperature_precision(&mut self) -> Result<I16F16, Smt160Error> {
         critical_section::with(|_| {
             self.decoder.reset();
