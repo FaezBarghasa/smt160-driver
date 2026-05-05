@@ -12,7 +12,7 @@ where
     T: Fn() -> u64,
 {
     pin: P,
-    get_time_us: T,
+    get_time: T,
     decoder: Smt160Decoder,
 }
 
@@ -21,22 +21,25 @@ where
     P: InputPin,
     T: Fn() -> u64,
 {
-    pub fn new(pin: P, get_time_us: T) -> Self {
+    /// Creates a new blocking driver.
+    /// `get_time` should return timestamps in the same units as the decoder's clock.
+    pub fn new(pin: P, get_time: T, decoder: Smt160Decoder) -> Self {
         Self {
             pin,
-            get_time_us,
-            decoder: Smt160Decoder::new(),
+            get_time,
+            decoder,
         }
     }
 
     /// Reads the temperature with a standard polling loop and timeout.
-    pub fn read_temperature(&mut self, timeout_us: u32) -> Result<I16F16, Smt160Error> {
-        let start = (self.get_time_us)();
+    /// `timeout` is in the same units as `get_time`.
+    pub fn read_temperature(&mut self, timeout: u64) -> Result<I16F16, Smt160Error> {
+        let start = (self.get_time)();
         let mut last_state = self.pin.is_high().map_err(|_| Smt160Error::Timeout)?;
 
         loop {
-            let now = (self.get_time_us)();
-            if now.wrapping_sub(start) > timeout_us as u64 {
+            let now = (self.get_time)();
+            if now.wrapping_sub(start) > timeout {
                 return Err(Smt160Error::Timeout);
             }
 
@@ -52,6 +55,7 @@ where
 
     /// High-precision reading using a tight loop within a critical section.
     /// This minimizes jitter from interrupts during the measurement of 3 transitions.
+    /// This will block all other tasks/interrupts until 3 transitions are detected!
     pub fn read_temperature_precision(&mut self) -> Result<I16F16, Smt160Error> {
         critical_section::with(|_| {
             self.decoder.reset();
@@ -62,7 +66,7 @@ where
             while transitions < 3 {
                 let current_state = self.pin.is_high().map_err(|_| Smt160Error::Timeout)?;
                 if current_state != last_state {
-                    let now = (self.get_time_us)();
+                    let now = (self.get_time)();
                     last_state = current_state;
                     transitions += 1;
                     
@@ -72,7 +76,6 @@ where
                 }
             }
             
-            // If we didn't get a result after 3 transitions, something is wrong with the decoder state
             Err(Smt160Error::SequenceViolation)
         })
     }

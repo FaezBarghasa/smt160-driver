@@ -49,24 +49,27 @@ fn main() -> ! {
     let mut gpioa = dp.GPIOA.split(&mut clocks);
     let sensor_pin = gpioa.pa0.into_floating_input(&mut gpioa.crl);
 
-    // 4. Setup DWT for microsecond timestamps
+    // 4. Setup DWT for cycle-accurate timestamps
     cp.DWT.enable_cycle_counter();
     
-    // 72MHz system clock means 72 cycles per microsecond.
-    let get_time_us = || {
-        let cycles = DWT::cycle_count();
-        (cycles as u64) / 72
+    // 72MHz system clock (1 tick = 13.88ns)
+    let get_ticks = || {
+        DWT::cycle_count() as u64
     };
 
-    let mut smt160 = Smt160Blocking::new(sensor_pin, get_time_us);
+    use smt160_driver::decoder::Smt160Decoder;
+    let decoder = Smt160Decoder::with_clock(72);
+    let mut smt160 = Smt160Blocking::new(sensor_pin, get_ticks, decoder);
 
     info!("SMT160 Blocking Driver Example Started");
 
     loop {
-        // Read temperature with 500ms timeout
-        match smt160.read_temperature(500_000) {
+        // Option 1: High-precision reading (blocks all other tasks)
+        // match smt160.read_temperature_precision() {
+        
+        // Option 2: Standard reading with timeout (36M ticks = 500ms)
+        match smt160.read_temperature(36_000_000) {
             Ok(temp) => {
-                // Fixed-point I16F16 can be converted or printed directly if defmt is configured.
                 info!("Temperature: {} C", temp.to_num::<f32>());
             }
             Err(e) => {

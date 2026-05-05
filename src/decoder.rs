@@ -11,10 +11,12 @@ pub struct Smt160Decoder {
     buffer: [I16F16; 16],
     buf_idx: usize,
     buf_full: bool,
+    clock_mhz: u32,
 }
 
 impl Smt160Decoder {
     /// Creates a new decoder instance with 16-sample buffer.
+    /// Default clock is 1MHz (timestamps in microseconds).
     pub const fn new() -> Self {
         Self {
             last_rise: None,
@@ -22,7 +24,15 @@ impl Smt160Decoder {
             buffer: [I16F16::ZERO; 16],
             buf_idx: 0,
             buf_full: false,
+            clock_mhz: 1,
         }
+    }
+
+    /// Creates a new decoder instance with a custom clock frequency.
+    pub const fn with_clock(mhz: u32) -> Self {
+        let mut s = Self::new();
+        s.clock_mhz = mhz;
+        s
     }
 
     /// Resets the internal state.
@@ -33,27 +43,29 @@ impl Smt160Decoder {
         self.buf_full = false;
     }
 
-    /// Process a new edge timestamp (in microseconds).
-    pub fn push_edge(&mut self, is_rising: bool, timestamp_us: u64) -> Result<Option<I16F16>, Smt160Error> {
+    /// Process a new edge timestamp.
+    /// Units depend on the clock frequency set (default is microseconds).
+    pub fn push_edge(&mut self, is_rising: bool, timestamp: u64) -> Result<Option<I16F16>, Smt160Error> {
         if is_rising {
             if let (Some(prev_rise), Some(prev_fall)) = (self.last_rise, self.last_fall) {
                 let active_time = prev_fall.wrapping_sub(prev_rise);
-                let period = timestamp_us.wrapping_sub(prev_rise);
+                let period = timestamp.wrapping_sub(prev_rise);
 
                 // Update for next cycle
-                self.last_rise = Some(timestamp_us);
+                self.last_rise = Some(timestamp);
 
                 if period == 0 || active_time == 0 || active_time >= period {
                     return Err(Smt160Error::SequenceViolation);
                 }
 
                 // Frequency validation
-                let freq = 1_000_000 / period as u32;
-                if freq < MIN_FREQ || freq > MAX_FREQ {
+                let freq = (self.clock_mhz as u64 * 1_000_000) / period;
+                if freq < MIN_FREQ as u64 || freq > MAX_FREQ as u64 {
                     return Err(Smt160Error::FrequencyOutOfRange);
                 }
 
                 // High-precision duty cycle and temperature calculation
+                // Internal Precision: Use 'fixed::types::I32F32' for all intermediate calculations
                 let duty_cycle = I32F32::from_num(active_time) / I32F32::from_num(period);
                 
                 // Typical physical bounds for SMT160 are 0.3 to 0.98
@@ -61,6 +73,7 @@ impl Smt160Decoder {
                     return Err(Smt160Error::InvalidDutyCycle);
                 }
 
+                // Multiplicative Inverse: (DutyCycle - 0.320) * (1 / 0.00470)
                 let temp_i32 = (duty_cycle - DC_OFFSET) * INV_STEP;
                 let temp = I16F16::from_num(temp_i32);
 
@@ -74,13 +87,13 @@ impl Smt160Decoder {
                     let avg = self.average();
                     let diff = if temp > avg { temp - avg } else { avg - temp };
                     
-                    // Reject if > 2.0°C from rolling average
+                    // Reject if > 2.0°C from current rolling average
                     if diff > I16F16::from_num(2) {
                         return Err(Smt160Error::HighJitter);
                     }
                 }
 
-                // Add to circular buffer
+                // Add to 16-sample circular buffer
                 self.buffer[self.buf_idx] = temp;
                 self.buf_idx = (self.buf_idx + 1) % 16;
                 if self.buf_idx == 0 {
@@ -93,13 +106,13 @@ impl Smt160Decoder {
                     Ok(None)
                 }
             } else {
-                self.last_rise = Some(timestamp_us);
+                self.last_rise = Some(timestamp);
                 Ok(None)
             }
         } else {
             // Falling edge
             if self.last_rise.is_some() {
-                self.last_fall = Some(timestamp_us);
+                self.last_fall = Some(timestamp);
             }
             Ok(None)
         }

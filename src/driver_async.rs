@@ -13,7 +13,7 @@ where
     T: Fn() -> u64,
 {
     pin: P,
-    timer_fn: T,
+    get_time: T,
     decoder: Smt160Decoder,
 }
 
@@ -23,22 +23,23 @@ where
     T: Fn() -> u64,
 {
     /// Creates a new async driver.
-    pub fn new(pin: P, timer_fn: T) -> Self {
+    pub fn new(pin: P, get_time: T, decoder: Smt160Decoder) -> Self {
         Self {
             pin,
-            timer_fn,
-            decoder: Smt160Decoder::new(),
+            get_time,
+            decoder,
         }
     }
 
     /// Reads the temperature using 16-sample filtering.
+    /// Returns the average temperature after 16 samples are collected.
     pub async fn read_temperature(&mut self) -> Result<I16F16, Smt160Error> {
         loop {
             // Await pin change
             self.pin.wait_for_any_edge().await.map_err(|_| Smt160Error::Timeout)?;
 
             // Capture timestamp immediately
-            let now = (self.timer_fn)();
+            let now = (self.get_time)();
 
             // Determine edge
             let is_rising = self.pin.is_high().map_err(|_| Smt160Error::Timeout)?;
