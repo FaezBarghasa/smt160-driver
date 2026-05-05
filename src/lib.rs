@@ -15,6 +15,7 @@
 pub mod config;
 pub mod decoder;
 pub mod driver_async;
+pub mod driver_blocking;
 pub mod i2c_telemetry;
 
 use fixed::types::I16F16;
