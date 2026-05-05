@@ -35,7 +35,7 @@ mod app {
         let mut flash = cx.device.FLASH.constrain();
         let rcc = cx.device.RCC.constrain();
 
-        let rcc = rcc.freeze(
+        let mut rcc = rcc.freeze(
             stm32f1xx_hal::rcc::Config::hse(8.MHz())
                 .sysclk(72.MHz())
                 .pclk1(36.MHz()),

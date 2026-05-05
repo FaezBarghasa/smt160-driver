@@ -8,7 +8,7 @@ pub const DC_OFFSET: I32F32 = I32F32::from_bits(1374389534); // 0.320
 
 /// Pre-calculated inverse of the step constant (1 / 0.00470)
 /// for high-performance multiplication on platforms without FPU.
-pub const INV_STEP: I32F32 = I32F32::from_bits(91381335441); // 212.765957...
+pub const INV_STEP: I32F32 = I32F32::from_bits(913822833441); // 212.765957...
 
 /// Safety thresholds for valid sensor signal (Hz)
 pub const MIN_FREQ: u32 = 500;

@@ -55,6 +55,12 @@ impl Smt160Decoder {
 
                 // High-precision duty cycle and temperature calculation
                 let duty_cycle = I32F32::from_num(active_time) / I32F32::from_num(period);
+                
+                // Typical physical bounds for SMT160 are 0.3 to 0.98
+                if duty_cycle < I32F32::from_num(0.3) || duty_cycle > I32F32::from_num(0.98) {
+                    return Err(Smt160Error::InvalidDutyCycle);
+                }
+
                 let temp_i32 = (duty_cycle - DC_OFFSET) * INV_STEP;
                 let temp = I16F16::from_num(temp_i32);
 
@@ -109,5 +115,55 @@ impl Smt160Decoder {
             sum += I32F32::from_num(self.buffer[i]);
         }
         I16F16::from_num(sum / I32F32::from_num(len))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_normal_operation() {
+        let mut decoder = Smt160Decoder::new();
+        let period = 1000;
+        let high = 438;
+        let mut ts = 0;
+        for _ in 0..17 {
+            let _ = decoder.push_edge(true, ts);
+            ts += high;
+            let _ = decoder.push_edge(false, ts);
+            ts += period - high;
+        }
+        let res = decoder.push_edge(true, ts).unwrap();
+        assert!(res.is_some());
+        let temp = res.unwrap();
+        assert!(temp > 25.0 && temp < 25.2);
+    }
+
+    #[test]
+    fn test_frequency_validation() {
+        let mut decoder = Smt160Decoder::new();
+        let _ = decoder.push_edge(true, 0);
+        let _ = decoder.push_edge(false, 100);
+        let res = decoder.push_edge(true, 10000);
+        assert!(matches!(res, Err(Smt160Error::FrequencyOutOfRange)));
+    }
+
+    #[test]
+    fn test_outlier_rejection() {
+        let mut decoder = Smt160Decoder::new();
+        let mut ts = 0;
+        for _ in 0..17 {
+            let _ = decoder.push_edge(true, ts);
+            ts += 438;
+            let _ = decoder.push_edge(false, ts);
+            ts += 562;
+        }
+        let _ = decoder.push_edge(true, ts);
+        ts += 500;
+        let _ = decoder.push_edge(false, ts);
+        ts += 500;
+        let res = decoder.push_edge(true, ts);
+        assert!(matches!(res, Err(Smt160Error::HighJitter)));
     }
 }
