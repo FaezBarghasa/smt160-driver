@@ -13,6 +13,7 @@ defmt = { version = "0.3", optional = true }
 [dev-dependencies]
 cortex-m-rtic = "1.1.4"
 cortex-m = "0.7.7"
+cortex-m-rt = "0.7.3"
 stm32f1xx-hal = { version = "0.11.0", features = ["medium", "stm32f103"] }
 # esp-hal = { version = "1.1.0" }
 defmt-rtt = "0.4.0"

@@ -547,6 +547,7 @@ name = "smt160-driver"
 version = "0.1.0"
 dependencies = [
  "cortex-m",
+ "cortex-m-rt",
  "cortex-m-rtic",
  "defmt 0.3.100",
  "defmt-rtt",

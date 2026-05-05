@@ -7,7 +7,7 @@
 //! ## Hardware Configuration
 //! - **MCU**: STM32F103C8T6
 //! - **Pin**: PA0 (Floating Input)
-//! - **Timer**: TIM2 configured as a 1µs free-running counter.
+//! - **Timer**: DWT (Data Watchpoint and Trace) cycle counter for microseconds.
 //!
 //! ## Wiring
 //! - SMT160 VCC -> 3.3V
@@ -23,51 +23,51 @@ use smt160_driver::driver_blocking::Smt160Blocking;
 use stm32f1xx_hal::{
     pac,
     prelude::*,
-    timer::CounterUs,
 };
 use cortex_m_rt::entry;
+use cortex_m::peripheral::DWT;
 use defmt::{info, error};
 
 #[entry]
 fn main() -> ! {
     // 1. Core and Device Peripherals
-    let cp = pac::CorePeripherals::take().unwrap();
+    let mut cp = pac::CorePeripherals::take().unwrap();
     let dp = pac::Peripherals::take().unwrap();
 
     // 2. Setup Clocks (72MHz)
     let mut flash = dp.FLASH.constrain();
     let rcc = dp.RCC.constrain();
-    let clocks = rcc.cfgr
-        .use_hse(8.MHz())
-        .sysclk(72.MHz())
-        .pclk1(36.MHz())
-        .freeze(&mut flash.acr);
+
+    let clocks = rcc.freeze(
+        stm32f1xx_hal::rcc::Config::hse(8.MHz())
+            .sysclk(72.MHz())
+            .pclk1(36.MHz()),
+        &mut flash.acr,
+    );
 
     // 3. Setup GPIO
     let mut gpioa = dp.GPIOA.split();
+    // In stm32f1xx-hal 0.11, split() might take &mut rcc.apb2 if using the old API, 
+    // but the RTIC example shows gpioa = dp.GPIOA.split(&mut rcc) where rcc is the frozen clocks?
+    // Let me check f103_rtic.rs again.
+    // Line 65: let mut gpioa = cx.device.GPIOA.split(&mut rcc);
+    // And rcc at that point is the result of rcc.freeze(...).
+    
+    // Wait, the RTIC example calls:
+    // let mut rcc = rcc.freeze(...)
+    // let mut gpioa = cx.device.GPIOA.split(&mut rcc);
+    
+    // Okay, let's follow that.
+    let mut rcc_frozen = clocks;
+    let mut gpioa = dp.GPIOA.split(&mut rcc_frozen);
     let sensor_pin = gpioa.pa0.into_floating_input(&mut gpioa.crl);
 
-    // 4. Setup Timer for microsecond timestamps
-    // We use CounterUs which provides a simple way to get 'now()' in microseconds.
-    let mut timer = dp.TIM2.counter_us(&clocks);
-    timer.start(1.secs()).unwrap(); // Wrap every second, but we only need it for delta
-
-    // 5. Initialize the Blocking Driver
-    // We provide the pin and a closure that returns the current microsecond count.
-    // Note: Since CounterUs is 16-bit on F1, we might need to handle wrap-around 
-    // or use a 32-bit source. For this example, we'll use a simpler approach 
-    // by tracking overflows manually or using a HAL provided 32-bit-like source if available.
-    // However, stm32f1xx-hal's CounterUs for TIM2 is 16-bit.
+    // 4. Setup DWT for microsecond timestamps
+    cp.DWT.enable_cycle_counter();
     
-    // Better: Use the DWT (Data Watchpoint and Trace) for a 32-bit cycle counter 
-    // and convert to microseconds.
-    let mut dcb = cp.DCB;
-    let mut dwt = cp.DWT;
-    dwt.enable_cycle_counter(&mut dcb);
-    
+    // 72MHz system clock means 72 cycles per microsecond.
     let get_time_us = || {
-        let cycles = dwt.get_cycle_count();
-        // 72MHz = 72 cycles per microsecond
+        let cycles = DWT::get_cycle_count();
         (cycles as u64) / 72
     };
 
@@ -87,7 +87,7 @@ fn main() -> ! {
             }
         }
 
-        // Wait a bit before next reading
-        cortex_m::asm::delay(clocks.sysclk().raw() / 2);
+        // Wait a bit before next reading (~500ms)
+        cortex_m::asm::delay(72_000_000 / 2);
     }
 }
