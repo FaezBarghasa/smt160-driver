@@ -18,39 +18,31 @@ pub mod driver_async;
 pub mod driver_blocking;
 pub mod i2c_telemetry;
 
-use fixed::types::I16F16;
+// use fixed::types::I16F16;
 
 /// All potential failures of the SMT160 processing pipeline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Smt160Error {
-    /// No edge was detected within the expected timeframe.
     Timeout,
-    /// Calculated duty cycle is outside the physical bounds of the sensor (0.3 - 0.98).
-    InvalidDutyCycle(I16F16),
-    /// Sensor frequency is outside the specified 500Hz - 5000Hz range.
-    FrequencyOutOfRange(u32),
-    /// Detected temperature is outside the industrial range (-45°C to 130°C).
-    ThermalOverload(I16F16),
-    /// Hardware sequence violation (e.g., two rising edges without a falling edge) 
-    /// or a sudden frequency shift >10%.
+    InvalidDutyCycle,
+    FrequencyOutOfRange,
+    ThermalOverload,
     SequenceViolation,
-    /// High jitter detected: value deviates >1.5°C from the rolling average.
     HighJitter,
-    /// Error during I2C communication.
     I2cError,
 }
 
 impl core::fmt::Display for Smt160Error {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::Timeout => write!(f, "Timeout waiting for sensor edge"),
-            Self::InvalidDutyCycle(dc) => write!(f, "Duty cycle out of bounds: {}", dc),
-            Self::FrequencyOutOfRange(freq) => write!(f, "Frequency out of range: {} Hz", freq),
-            Self::ThermalOverload(temp) => write!(f, "Thermal overload detected: {} C", temp),
-            Self::SequenceViolation => write!(f, "Hardware sequence violation or 10% frequency shift"),
-            Self::HighJitter => write!(f, "High jitter detected (>1.5C deviation)"),
-            Self::I2cError => write!(f, "I2C communication error"),
+            Self::Timeout => write!(f, "Timeout"),
+            Self::InvalidDutyCycle => write!(f, "Invalid Duty Cycle"),
+            Self::FrequencyOutOfRange => write!(f, "Frequency Out Of Range"),
+            Self::ThermalOverload => write!(f, "Thermal Overload"),
+            Self::SequenceViolation => write!(f, "Sequence Violation"),
+            Self::HighJitter => write!(f, "High Jitter"),
+            Self::I2cError => write!(f, "I2C Error"),
         }
     }
 }

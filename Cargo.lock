@@ -271,7 +271,6 @@ checksum = "9af2cbf772fa6d1c11358f92ef554cb6b386201210bcf0e91fb7fba8a907fb40"
 dependencies = [
  "az",
  "bytemuck",
- "defmt 1.0.1",
  "half",
  "typenum",
 ]
@@ -549,11 +548,13 @@ dependencies = [
  "cortex-m",
  "cortex-m-rt",
  "cortex-m-rtic",
+ "critical-section",
  "defmt 0.3.100",
  "defmt-rtt",
  "embedded-hal 1.0.0",
  "embedded-hal-async",
  "fixed",
+ "fugit",
  "panic-probe",
  "stm32f1xx-hal",
 ]
