@@ -38,7 +38,7 @@ fn main() -> ! {
     let mut flash = dp.FLASH.constrain();
     let rcc = dp.RCC.constrain();
 
-    let clocks = rcc.freeze(
+    let mut clocks = rcc.freeze(
         stm32f1xx_hal::rcc::Config::hse(8.MHz())
             .sysclk(72.MHz())
             .pclk1(36.MHz()),
@@ -46,20 +46,7 @@ fn main() -> ! {
     );
 
     // 3. Setup GPIO
-    let mut gpioa = dp.GPIOA.split();
-    // In stm32f1xx-hal 0.11, split() might take &mut rcc.apb2 if using the old API, 
-    // but the RTIC example shows gpioa = dp.GPIOA.split(&mut rcc) where rcc is the frozen clocks?
-    // Let me check f103_rtic.rs again.
-    // Line 65: let mut gpioa = cx.device.GPIOA.split(&mut rcc);
-    // And rcc at that point is the result of rcc.freeze(...).
-    
-    // Wait, the RTIC example calls:
-    // let mut rcc = rcc.freeze(...)
-    // let mut gpioa = cx.device.GPIOA.split(&mut rcc);
-    
-    // Okay, let's follow that.
-    let mut rcc_frozen = clocks;
-    let mut gpioa = dp.GPIOA.split(&mut rcc_frozen);
+    let mut gpioa = dp.GPIOA.split(&mut clocks);
     let sensor_pin = gpioa.pa0.into_floating_input(&mut gpioa.crl);
 
     // 4. Setup DWT for microsecond timestamps
@@ -67,7 +54,7 @@ fn main() -> ! {
     
     // 72MHz system clock means 72 cycles per microsecond.
     let get_time_us = || {
-        let cycles = DWT::get_cycle_count();
+        let cycles = DWT::cycle_count();
         (cycles as u64) / 72
     };
 
