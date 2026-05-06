@@ -1,59 +1,67 @@
-//! High-Accuracy Telemetry and I2C integration.
+//! Thread-Safe I2C Telemetry and Shared State Management.
 
 use core::sync::atomic::{AtomicU32, Ordering};
 use fixed::types::I16F16;
 
-/// Thread-safe telemetry container for sharing temperature data across tasks.
+/// A thread-safe, lock-free container for sharing temperature data across task boundaries.
 /// 
-/// # Hazards
-/// - **Stale Data**: If the sensor task stops updating, `get_latest` will return the last 
-///   valid temperature indefinitely. Check sensor status separately if possible.
-/// 
-/// # Performance
-/// - **Lock-Free**: Uses `AtomicU32` for non-blocking read/write access.
-pub struct Smt160Telemetry {
-    temp_bits: AtomicU32,
+/// # Architecture
+/// Utilizes atomic primitives (`AtomicU32`) to allow high-frequency updates from a 
+/// sensor task while providing non-blocking access for I2C read requests.
+pub struct Smt160SharedTelemetry {
+    temperature_bits_atomic: AtomicU32,
 }
 
-impl Smt160Telemetry {
-    /// Creates a new telemetry container.
+
+impl Default for Smt160SharedTelemetry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Smt160SharedTelemetry {
+    /// Creates a new shared telemetry container initialized to zero.
     pub const fn new() -> Self {
         Self {
-            temp_bits: AtomicU32::new(0),
+            temperature_bits_atomic: AtomicU32::new(0),
         }
     }
 
-    /// Updates the stored temperature reading.
-    pub fn update(&self, temp: I16F16) {
-        self.temp_bits.store(temp.to_bits() as u32, Ordering::Relaxed);
+    /// Atomically updates the stored temperature reading.
+    pub fn update_temperature(&self, current_temperature: I16F16) {
+        self.temperature_bits_atomic.store(current_temperature.to_bits() as u32, Ordering::Release);
     }
 
-    /// Retrieves the latest temperature reading.
-    pub fn get_latest(&self) -> I16F16 {
-        I16F16::from_bits(self.temp_bits.load(Ordering::Relaxed) as i32)
+    /// Retrieves the latest temperature reading in fixed-point format.
+    pub fn get_latest_reading(&self) -> I16F16 {
+        I16F16::from_bits(self.temperature_bits_atomic.load(Ordering::Acquire) as i32)
     }
 
-    /// Returns the latest temperature as a 4-byte LE array.
-    pub fn get_latest_bytes(&self) -> [u8; 4] {
-        self.temp_bits.load(Ordering::Relaxed).to_le_bytes()
+    /// Returns the latest temperature as a 4-byte little-endian byte array.
+    /// 
+    /// # Summary
+    /// Optimized for direct transmission over I2C or SPI buses.
+    pub fn get_latest_reading_bytes(&self) -> [u8; 4] {
+        self.temperature_bits_atomic.load(Ordering::Acquire).to_le_bytes()
     }
 }
 
-/// A non-blocking I2C telemetry task logic.
-pub struct Smt160I2cTask<'a> {
-    telemetry: &'a Smt160Telemetry,
+/// Logic for handling asynchronous I2C telemetry requests.
+pub struct Smt160I2cTelemetryTask<'a> {
+    shared_telemetry: &'a Smt160SharedTelemetry,
 }
 
-impl<'a> Smt160I2cTask<'a> {
-    pub fn new(telemetry: &'a Smt160Telemetry) -> Self {
-        Self { telemetry }
+impl<'a> Smt160I2cTelemetryTask<'a> {
+    /// Creates a new I2C task logic handler.
+    pub fn new(shared_telemetry: &'a Smt160SharedTelemetry) -> Self {
+        Self { shared_telemetry }
     }
 
-    /// Yields the latest temperature bytes. 
+    /// Processes an incoming I2C read request and returns the latest temperature bytes.
     /// 
     /// # Performance
-    /// - **Deterministic**: Returns immediately without waiting for I2C bus locks.
-    pub async fn handle_read_request(&self) -> [u8; 4] {
-        self.telemetry.get_latest_bytes()
+    /// - **Deterministic**: Returns immediately without yielding or blocking.
+    pub async fn handle_i2c_read_request(&self) -> [u8; 4] {
+        self.shared_telemetry.get_latest_reading_bytes()
     }
 }

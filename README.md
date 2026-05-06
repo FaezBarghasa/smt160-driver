@@ -1,33 +1,28 @@
-# SMT160-Driver (High-Accuracy Edition)
+# SMT160-Driver (Industrial Precision Edition)
 
-A high-precision, fixed-point, and async-friendly Rust driver for the **SMT160** temperature sensor, targeting **0.05°C precision**.
+A high-integrity, fixed-point, and hardware-agnostic Rust driver for the **SMT160** temperature sensor, designed for **0.05°C precision** in safety-critical industrial applications.
 
 [![Crates.io](https://img.shields.io/crates/v/smt160-driver.svg)](https://crates.io/crates/smt160-driver)
 [![Docs.rs](https://docs.rs/smt160-driver/badge.svg)](https://docs.rs/smt160-driver)
 
-## Overview
+## 🏗️ Architecture: Self-Documenting & Clean
 
-The SMT160 is a high-accuracy temperature sensor that outputs a Pulse Width Modulated (PWM) signal. The temperature is encoded in the duty cycle of the signal according to the formula:
+This driver implements a **Self-Documenting Clean Architecture**, separating core mathematical logic from hardware-specific capture logic. This ensures that the same logic engine can be used across STM32, ESP32, nRF, or even virtualized environments without modification.
 
-**DC = 0.320 + 0.00470 * t**
+> [!TIP]
+> **Zero-FPU Requirement**: All calculations use `I32F32` and `I16F16` fixed-point arithmetic, ensuring deterministic performance on Cortex-M0/M3/M4 devices without hardware floating-point support.
 
-This driver provides a robust, `no_std` implementation that handles the complexities of timing-critical PWM decoding with industrial-grade reliability.
+## 🚀 Key Features
 
-## Key Features
+- **Industrial Grade Precision**: Targeted at 0.05°C accuracy with support for high-resolution timers (up to 72MHz).
+- **Multi-Phase Calibration**: Supports 5-point piecewise linear interpolation for non-linear sensor correction.
+- **Hardware Agnostic HAL**: Core driver is generic over the `CaptureDevice` trait.
+- **Observability & Health**: Integrated monitoring for signal jitter (RMS), frequency drift, and error tracking.
+- **Async & Non-Blocking**: Native support for `embedded-hal-async` and multitasking environments.
 
-- **High Precision (0.05°C Target)**: Optimized for high-resolution timers (up to 72MHz capture) with sub-microsecond timestamping.
-- **Fixed-Point Engine**: Uses `I32F32` for intermediate calculations and `I16F16` for results, ensuring deterministic performance without an FPU.
-- **Clock-Aware Decoder**: The passive logic core supports custom clock frequencies, allowing for raw tick-based decoding with zero rounding loss.
-- **Async Native**: Supports `embedded-hal-async` with native Rust 2024 async-in-trait support.
-- **Industrial Failsafes**:
-  - **16-Sample Moving Average**: Smooths readings while maintaining responsiveness.
-  - **Outlier Rejection**: Discards noise spikes (>2.0°C from rolling average).
-  - **Critical Section Polling**: Provides jitter-free measurement for timing-sensitive blocking applications.
-  - **Thermal Bounds**: Validates readings against the SMT160 range (-45°C to 130°C).
+## 🛠️ Installation
 
-## Installation
-
-Add this to your `Cargo.toml`:
+Add the following to your `Cargo.toml`:
 
 ```toml
 [dependencies]
@@ -35,55 +30,58 @@ smt160-driver = "0.1.0"
 fixed = { version = "1.27.0", features = ["az"] }
 ```
 
-## Usage
+## 📖 Usage Examples
 
-### High-Accuracy Async (e.g. ESP32/RTOS)
+### Modern Asynchronous Implementation (Generic)
 
 ```rust
-use smt160_driver::decoder::Smt160Decoder;
-use smt160_driver::driver_async::Smt160Async;
+use smt160_driver::{Smt160Driver, Reading};
+use smt160_driver::config::StaticConfiguration;
 
-// 1. Configure decoder for your timer frequency (e.g., 1MHz for microseconds)
-let decoder = Smt160Decoder::with_clock(1);
+// 1. Initialize the generic driver with hardware-specific capture
+let mut sensor = Smt160Driver::new(
+    StaticConfiguration, 
+    stm32_capture_device, 
+    72 // Timer frequency in MHz
+);
 
-// 2. Initialize driver with pin and timestamp source
-let mut sensor = Smt160Async::new(pin, || timer.now_us(), decoder);
-
-// 3. Read temperature (averaged over 16 samples)
-match sensor.read_temperature().await {
-    Ok(temp) => println!("Temperature: {} °C", temp.to_num::<f32>()),
-    Err(e) => eprintln!("Error: {:?}", e),
+// 2. Perform high-precision asynchronous reading
+match sensor.read_temperature_celsius().await {
+    Ok(reading) => println!("Temp: {} °C, Status: {:?}", reading.temperature_celsius.to_num::<f32>(), reading.status),
+    Err(e) => eprintln!("Sensor Error: {}", e),
 }
 ```
 
-### High-Accuracy Blocking (e.g. STM32 Bluepill)
-
-For maximum precision, use the `read_temperature_precision` method which disables interrupts during a single cycle measurement.
+### High-Precision Polling (Low-Latency)
 
 ```rust
 use smt160_driver::decoder::Smt160Decoder;
-use smt160_driver::driver_blocking::Smt160Blocking;
+use smt160_driver::driver_blocking::Smt160BlockingDriver;
 
-// Use 72MHz ticks for ~0.003°C resolution
-let decoder = Smt160Decoder::with_clock(72);
-let mut sensor = Smt160Blocking::new(pin, || dwt.cycle_count() as u64, decoder);
+let decoder = Smt160Decoder::new_standalone(72);
+let mut sensor = Smt160BlockingDriver::new(pin, || dwt.cycle_count() as u64, decoder);
 
-match sensor.read_temperature_precision() {
-    Ok(temp) => info!("Precise Temp: {} °C", temp.to_num::<f32>()),
-    Err(e) => error!("Error: {:?}", e),
+// Perform measurement within a critical section to eliminate capture jitter
+if let Ok(reading) = sensor.read_temperature_high_precision() {
+    info!("Precise Temperature: {} °C", reading.temperature_celsius.to_num::<f32>());
 }
 ```
 
-## Hardware Guide: Resolution vs Clock
+## 📊 Precision & Hardware Requirements
 
-To achieve the **0.05°C accuracy** target, your capture clock must be high enough to resolve small duty cycle shifts:
+| Clock Frequency | Resolution | Industrial Target | Use Case |
+| :--- | :--- | :--- | :--- |
+| 1 MHz (1µs) | ~0.210°C | ❌ No | Low-power indicators |
+| 8 MHz (125ns) | ~0.026°C | ✅ Yes | Standard HVAC/Process Control |
+| 72 MHz (13ns) | ~0.003°C | ✅ Yes (Ultra) | Laboratory Calibration |
 
-| Clock Frequency | Resolution | Target Met? |
-|-----------------|------------|-------------|
-| 1 MHz (1µs)     | ~0.210°C   | ❌ No        |
-| 8 MHz (125ns)   | ~0.026°C   | ✅ Yes       |
-| 72 MHz (13ns)   | ~0.003°C   | ✅ Yes (Ultra) |
+## 🛡️ Safety & Integrity
 
-## License
+> [!IMPORTANT]
+> **Safety Guards**: The driver includes automatic boundary validation (0.320-0.980 Duty Cycle) and frequency range validation (1kHz-4kHz) to detect sensor hardware failures or wiring issues immediately.
+
+---
+
+### License
 
 Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT license](LICENSE-MIT) at your option.

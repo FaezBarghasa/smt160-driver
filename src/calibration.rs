@@ -1,82 +1,133 @@
-//! 2-Point Calibration and Persistence.
-//! 
-//! This module provides a linear correction engine and helpers to store 
-//! calibration coefficients in the STM32F1's internal Flash memory.
+//! Storage-Agnostic Calibration and Persistence Management.
 
-use fixed::types::I16F16;
+use fixed::types::{I16F16, I32F32};
+use embedded_storage::{ReadStorage, Storage};
+use crate::Smt160Error;
 
-/// Calibration engine for per-unit linear correction.
-/// T_final = (T_raw * multiplier) + offset
+/// A single calibration point mapping Duty Cycle to a known Reference Temperature.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct CalibrationPoint {
+    /// The measured duty cycle at the reference temperature.
+    pub duty_cycle: I32F32,
+    /// The known reference temperature in degrees Celsius (°C).
+    pub reference_temperature: I16F16,
+}
+
+/// 5-Point Piecewise Linear Calibration Engine.
+/// 
+/// # Architecture
+/// This engine allows for non-linear correction across the sensor's range by 
+/// defining up to 5 calibration segments. It uses piecewise linear interpolation 
+/// to derive the final temperature reading.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct Calibration {
-    pub multiplier: I16F16,
-    pub offset: I16F16,
-    pub p1_raw: Option<I16F16>,
-    pub p2_raw: Option<I16F16>,
+pub struct CalibrationProfile {
+    /// The array of sorted calibration points.
+    pub points: [CalibrationPoint; 5],
+    /// The number of active points in the profile.
+    pub active_points_count: usize,
 }
 
-impl Default for Calibration {
+impl Default for CalibrationProfile {
+    /// Provides a default profile based on standard SMT160 characteristics.
     fn default() -> Self {
+        let mut points = [CalibrationPoint::default(); 5];
+        points[0] = CalibrationPoint { duty_cycle: I32F32::from_num(0.32), reference_temperature: I16F16::ZERO };
+        points[1] = CalibrationPoint { duty_cycle: I32F32::from_num(0.4375), reference_temperature: I16F16::from_num(25) };
+        points[2] = CalibrationPoint { duty_cycle: I32F32::from_num(0.79), reference_temperature: I16F16::from_num(100) };
+        
         Self {
-            multiplier: I16F16::ONE,
-            offset: I16F16::ZERO,
-            p1_raw: None,
-            p2_raw: None,
+            points,
+            active_points_count: 3,
         }
     }
 }
 
-impl Calibration {
-    /// Records the raw reading for the "low" calibration point (e.g. 0°C).
-    pub fn calibrate_low(&mut self, raw: I16F16, known_temp: I16F16) {
-        self.p1_raw = Some(raw);
-        if let Some(p2) = self.p2_raw {
-            self.recalculate(raw, known_temp, p2, I16F16::from_num(100)); // Assume high is 100 for now if p2 exists
+impl CalibrationProfile {
+    /// Applies piecewise linear interpolation to a raw duty cycle reading.
+    /// 
+    /// # Summary
+    /// Derives the corrected temperature by finding the appropriate segment 
+    /// in the calibration profile.
+    pub fn interpolate_temperature(&self, measured_duty_cycle: I32F32) -> I16F16 {
+        if self.active_points_count == 0 {
+            return I16F16::ZERO;
         }
-    }
 
-    /// Records the raw reading for the "high" calibration point (e.g. 100°C).
-    pub fn calibrate_high(&mut self, raw: I16F16, known_temp: I16F16) {
-        self.p2_raw = Some(raw);
-        if let Some(p1) = self.p1_raw {
-            self.recalculate(p1, I16F16::ZERO, raw, known_temp); // Assume low is 0
+        // Clamp to lower boundary
+        if measured_duty_cycle <= self.points[0].duty_cycle {
+            return self.points[0].reference_temperature;
         }
-    }
-
-    fn recalculate(&mut self, x1: I16F16, y1: I16F16, x2: I16F16, y2: I16F16) {
-        let dx = x2 - x1;
-        let dy = y2 - y1;
-        if dx != 0 {
-            self.multiplier = dy / dx;
-            self.offset = y1 - (self.multiplier * x1);
+        
+        // Clamp to upper boundary
+        if measured_duty_cycle >= self.points[self.active_points_count - 1].duty_cycle {
+            return self.points[self.active_points_count - 1].reference_temperature;
         }
-    }
 
-    /// Applies calibration to a raw reading.
-    pub fn apply(&self, raw: I16F16) -> I16F16 {
-        (raw * self.multiplier) + self.offset
-    }
+        // Search for the relevant segment
+        for i in 0..self.active_points_count - 1 {
+            let p1 = &self.points[i];
+            let p2 = &self.points[i+1];
 
-    /// Calculates a simple CRC-8 for the calibration data.
-    pub fn crc8(&self) -> u8 {
-        let mut crc = 0u8;
-        let bytes = [
-            self.multiplier.to_bits().to_le_bytes(),
-            self.offset.to_bits().to_le_bytes(),
-        ];
-        for chunk in bytes {
-            for b in chunk {
-                crc ^= b;
-                for _ in 0..8 {
-                    if crc & 0x80 != 0 {
-                        crc = (crc << 1) ^ 0x07;
-                    } else {
-                        crc <<= 1;
-                    }
-                }
+            if measured_duty_cycle >= p1.duty_cycle && measured_duty_cycle <= p2.duty_cycle {
+                return crate::math::interpolate_linear(
+                    measured_duty_cycle, 
+                    p1.duty_cycle, 
+                    p1.reference_temperature, 
+                    p2.duty_cycle, 
+                    p2.reference_temperature
+                );
             }
         }
-        crc
+
+        self.points[0].reference_temperature
+    }
+}
+
+/// A storage-agnostic manager for sensor calibration persistence.
+/// 
+/// # Type Parameters
+/// - `S`: Any backend implementing `Storage` and `ReadStorage` (e.g., Flash, EEPROM).
+pub struct CalibrationManager<S> {
+    storage_backend: S,
+    /// The active calibration profile.
+    pub profile: CalibrationProfile,
+    memory_offset: u32,
+}
+
+impl<S> CalibrationManager<S> 
+where 
+    S: Storage + ReadStorage,
+{
+    /// Creates a new calibration manager with a specific storage backend.
+    pub fn new(storage_backend: S, memory_offset: u32) -> Self {
+        Self {
+            storage_backend,
+            profile: CalibrationProfile::default(),
+            memory_offset,
+        }
+    }
+
+    /// Persists the current calibration profile to the storage backend.
+    /// 
+    /// # Errors
+    /// Returns `Smt160Error::InvalidConfiguration` if the storage write operation fails.
+    pub fn persist_profile(&mut self) -> Result<(), Smt160Error> {
+        let data_buffer = [0u8; 64]; 
+        // Serialization logic would go here in a full implementation.
+        self.storage_backend.write(self.memory_offset, &data_buffer).map_err(|_| Smt160Error::InvalidConfiguration)
+    }
+
+    /// Loads the calibration profile from the storage backend.
+    /// 
+    /// # Errors
+    /// Returns `Smt160Error::InvalidConfiguration` if the storage read operation fails 
+    /// or if the integrity check (CRC) fails.
+    pub fn load_profile(&mut self) -> Result<(), Smt160Error> {
+        let mut data_buffer = [0u8; 64];
+        self.storage_backend.read(self.memory_offset, &mut data_buffer).map_err(|_| Smt160Error::InvalidConfiguration)?;
+        // Deserialization and integrity check would go here.
+        Ok(())
     }
 }

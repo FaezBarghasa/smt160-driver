@@ -1,61 +1,78 @@
+//! Standard Asynchronous Wrapper for the SMT160 Sensor.
+
 use crate::decoder::Smt160Decoder;
 use crate::{Reading, Smt160Error};
 use embedded_hal::digital::InputPin;
 use embedded_hal_async::digital::Wait;
 
-/// Async Wrapper for SMT160 utilizing native async traits.
+/// An asynchronous, non-blocking driver wrapper for GPIO-based pulse capture.
 /// 
 /// # Hazards
-/// - **Context Switching Latency**: The precision of this driver depends on the latency of the 
-///   async executor and the underlying hardware interrupt handling.
+/// - **Context Switching Latency**: The precision of this driver depends on the latency 
+///   of the async executor and hardware interrupt handling.
 /// 
 /// # Performance
-/// - **Non-Blocking**: This driver yields back to the executor while waiting for edges, making 
-///   it ideal for concurrent applications.
-pub struct Smt160Async<P, T> 
+/// - **Non-Blocking**: Yields back to the executor while waiting for edges, making 
+///   it ideal for multitasking environments.
+pub struct Smt160AsyncDriver<P, T> 
 where 
     P: Wait + InputPin,
     T: Fn() -> u64,
 {
-    pin: P,
-    get_time: T,
+    input_pin: P,
+    get_system_time_ticks: T,
     decoder: Smt160Decoder,
 }
 
-impl<P, T> Smt160Async<P, T>
+impl<P, T> Smt160AsyncDriver<P, T>
 where
     P: Wait + InputPin,
     T: Fn() -> u64,
 {
-    /// Creates a new async driver.
-    pub fn new(pin: P, get_time: T, decoder: Smt160Decoder) -> Self {
+    /// Initializes a new asynchronous driver.
+    /// 
+    /// # Summary
+    /// `get_system_time_ticks` should provide monotonic timestamps in the same 
+    /// resolution as specified in the `Smt160Decoder`.
+    pub fn new(input_pin: P, get_system_time_ticks: T, decoder: Smt160Decoder) -> Self {
         Self {
-            pin,
-            get_time,
+            input_pin,
+            get_system_time_ticks,
             decoder,
         }
     }
 
-    /// Reads the temperature using high-precision filtering.
-    /// Returns the filtered temperature reading once a full cycle is processed.
-    pub async fn read_temperature(&mut self) -> Result<Reading, Smt160Error> {
+    /// Asynchronously captures and filters a full PWM cycle.
+    /// 
+    /// # Errors
+    /// Returns `Smt160Error::Timeout` if the pin fails to transition or if 
+    /// the signal violates physical boundaries.
+    pub async fn read_temperature_celsius(&mut self) -> Result<Reading, Smt160Error> {
         loop {
-            // Await pin change
-            self.pin.wait_for_any_edge().await.map_err(|_| Smt160Error::Timeout)?;
+            // Wait for any signal transition
+            self.input_pin.wait_for_any_edge().await.map_err(|_| Smt160Error::Timeout)?;
 
-            // Capture timestamp immediately
-            let now = (self.get_time)();
+            // Capture timestamp immediately to minimize jitter
+            let current_timestamp = (self.get_system_time_ticks)();
 
-            // Determine edge
-            let is_rising = self.pin.is_high().map_err(|_| Smt160Error::Timeout)?;
+            // Determine if the transition was a Rising or Falling edge
+            let is_rising_edge = self.input_pin.is_high().map_err(|_| Smt160Error::Timeout)?;
 
-            // Process edge
-            match self.decoder.push_edge(is_rising, now) {
+            // Process the edge using standard manufacturer constants
+            use crate::config::{Smt160Config, StaticConfiguration};
+            let (duty_cycle_offset, inverse_step_constant) = StaticConfiguration.get_offsets();
+            
+            match self.decoder.push_edge_timestamp(
+                is_rising_edge, 
+                current_timestamp, 
+                duty_cycle_offset, 
+                inverse_step_constant
+            ) {
                 Ok(Some(reading)) => return Ok(reading),
-                Ok(None) => continue,
-                Err(e) => {
-                    self.decoder.reset();
-                    return Err(e);
+                Ok(None) => continue, // Cycle incomplete, wait for next edge
+                Err(error) => {
+                    self.decoder.reset_state();
+                    return Err(error);
                 }
             }
         }

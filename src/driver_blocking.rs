@@ -1,85 +1,108 @@
+//! High-Performance Polling-Based Driver for SMT160.
+
 use crate::decoder::Smt160Decoder;
 use crate::{Reading, Smt160Error};
 use embedded_hal::digital::InputPin;
 
-/// A high-performance, polling-based driver for the SMT160.
+/// A synchronous, polling-based driver for high-precision temperature acquisition.
 /// 
 /// # Hazards
-/// - **Interrupt Latency**: In standard `read_temperature`, interrupt latency may cause jitter in 
-///   timestamp capture, leading to noise in temperature readings.
-/// - **CPU Blocking**: This driver is entirely blocking. It will consume 100% CPU while waiting for edges.
-/// 
-/// # Performance
-/// - **Tight Loop**: The precision variant uses a tight polling loop to minimize capture jitter.
-pub struct Smt160Blocking<P, T>
+/// - **CPU Blocking**: This driver is entirely blocking and will consume 100% 
+///   CPU time during the measurement cycle.
+/// - **Critical Section Hazards**: The precision variant disables interrupts, 
+///   which may cause missed deadlines in other system tasks.
+pub struct Smt160BlockingDriver<P, T>
 where
     P: InputPin,
     T: Fn() -> u64,
 {
-    pin: P,
-    get_time: T,
+    input_pin: P,
+    get_system_time_ticks: T,
     decoder: Smt160Decoder,
 }
 
-impl<P, T> Smt160Blocking<P, T>
+impl<P, T> Smt160BlockingDriver<P, T>
 where
     P: InputPin,
     T: Fn() -> u64,
 {
-    /// Creates a new blocking driver.
-    /// `get_time` should return timestamps in the same units as the decoder's clock.
-    pub fn new(pin: P, get_time: T, decoder: Smt160Decoder) -> Self {
+    /// Initializes a new polling-based driver.
+    pub fn new(input_pin: P, get_system_time_ticks: T, decoder: Smt160Decoder) -> Self {
         Self {
-            pin,
-            get_time,
+            input_pin,
+            get_system_time_ticks,
             decoder,
         }
     }
 
-    /// Reads the temperature with a standard polling loop and timeout.
-    /// `timeout` is in the same units as `get_time`.
-    pub fn read_temperature(&mut self, timeout: u64) -> Result<Reading, Smt160Error> {
-        let start = (self.get_time)();
-        let mut last_state = self.pin.is_high().map_err(|_| Smt160Error::Timeout)?;
+    /// Reads the temperature using a standard polling loop with a timeout guard.
+    /// 
+    /// # Summary
+    /// Continuously polls the GPIO pin and processes edges until a full cycle is 
+    /// completed or the timeout is reached.
+    /// 
+    /// # Errors
+    /// Returns `Smt160Error::Timeout` if the measurement exceeds the specified duration.
+    pub fn read_temperature_with_timeout(&mut self, timeout_ticks: u64) -> Result<Reading, Smt160Error> {
+        let start_time = (self.get_system_time_ticks)();
+        let mut last_captured_state = self.input_pin.is_high().map_err(|_| Smt160Error::Timeout)?;
 
         loop {
-            let now = (self.get_time)();
-            if now.wrapping_sub(start) > timeout {
+            let current_time = (self.get_system_time_ticks)();
+            if current_time.wrapping_sub(start_time) > timeout_ticks {
                 return Err(Smt160Error::Timeout);
             }
 
-            let current_state = self.pin.is_high().map_err(|_| Smt160Error::Timeout)?;
-            if current_state != last_state {
-                last_state = current_state;
-                if let Some(reading) = self.decoder.push_edge(current_state, now)? {
+            let current_state = self.input_pin.is_high().map_err(|_| Smt160Error::Timeout)?;
+            if current_state != last_captured_state {
+                last_captured_state = current_state;
+                
+                use crate::config::{Smt160Config, StaticConfiguration};
+                let (duty_cycle_offset, inverse_step_constant) = StaticConfiguration.get_offsets();
+                
+                if let Some(reading) = self.decoder.push_edge_timestamp(
+                    current_state, 
+                    current_time, 
+                    duty_cycle_offset, 
+                    inverse_step_constant
+                )? {
                     return Ok(reading);
                 }
             }
         }
     }
 
-    /// High-precision reading using a tight loop within a critical section.
+    /// Performs a high-precision measurement within a critical section.
+    /// 
+    /// # Summary
+    /// Disables interrupts to minimize capture jitter, ensuring maximum 
+    /// accuracy for single-point calibrations.
     /// 
     /// # Hazards
-    /// - **Disables Interrupts**: This method disables interrupts for at least 1 sensor cycle (~25ms).
-    ///   This may cause missed deadlines in high-speed control loops or UART parity errors.
-    /// - **Blocks Execution**: This is a synchronous, blocking call. Do not use in real-time tasks 
-    ///   with sub-10ms deadlines.
-    pub fn read_temperature_precision(&mut self) -> Result<Reading, Smt160Error> {
+    /// Disables all system interrupts for approximately 25ms-50ms.
+    pub fn read_temperature_high_precision(&mut self) -> Result<Reading, Smt160Error> {
         critical_section::with(|_| {
-            self.decoder.reset();
-            let mut transitions = 0;
-            let mut last_state = self.pin.is_high().map_err(|_| Smt160Error::Timeout)?;
+            self.decoder.reset_state();
+            let mut transition_count = 0;
+            let mut last_captured_state = self.input_pin.is_high().map_err(|_| Smt160Error::Timeout)?;
             
-            // We need 3 transitions to get one full cycle (Rise1, Fall, Rise2)
-            while transitions < 100 { // Allow some headroom
-                let current_state = self.pin.is_high().map_err(|_| Smt160Error::Timeout)?;
-                if current_state != last_state {
-                    let now = (self.get_time)();
-                    last_state = current_state;
-                    transitions += 1;
+            // We need 3 transitions to capture one full cycle (Rise1 -> Fall -> Rise2)
+            while transition_count < 100 { 
+                let current_state = self.input_pin.is_high().map_err(|_| Smt160Error::Timeout)?;
+                if current_state != last_captured_state {
+                    let current_time = (self.get_system_time_ticks)();
+                    last_captured_state = current_state;
+                    transition_count += 1;
                     
-                    if let Some(reading) = self.decoder.push_edge(current_state, now)? {
+                    use crate::config::{Smt160Config, StaticConfiguration};
+                    let (duty_cycle_offset, inverse_step_constant) = StaticConfiguration.get_offsets();
+                    
+                    if let Some(reading) = self.decoder.push_edge_timestamp(
+                        current_state, 
+                        current_time, 
+                        duty_cycle_offset, 
+                        inverse_step_constant
+                    )? {
                         return Ok(reading);
                     }
                 }

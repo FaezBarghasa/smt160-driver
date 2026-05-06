@@ -17,6 +17,9 @@ defmt = { version = "0.3", optional = true }
 usbd-serial = { version = "0.2.2", optional = true }
 usb-device = { version = "0.3", optional = true }
 stm32f1xx-hal = { version = "0.11.0", features = ["medium", "stm32f103"], optional = true }
+embedded-storage = "0.3"
+cfg-if = "1.0"
+
 
 [dev-dependencies]
 rtic = { version = "2.1", features = ["thumbv7-backend"] }

@@ -1,88 +1,89 @@
-//! STM32F1 Flash Persistence for Calibration Data.
-//! 
-//! Target: STM32F103C8 (64KB Flash)
-//! Page 63: 0x0800_FC00 - 0x0800_FFFF (1KB)
+//! STM32F1xx Flash Persistence Backend for Calibration Profiles.
 
-use crate::calibration::Calibration;
-use fixed::types::I16F16;
+use embedded_storage::{ReadStorage, Storage};
 use stm32f1xx_hal::pac::FLASH;
+use critical_section;
 
-/// Flash persistence helper for STM32F103.
-pub struct Smt160Flash;
+/// Persistent storage implementation utilizing the STM32F1 internal Flash memory.
+/// 
+/// # Architecture
+/// This implementation targets a fixed 1KB page at the end of the 64KB Flash 
+/// memory space (Page 63). All write operations are protected by `critical-section` 
+/// to ensure atomicity and prevent Bus Faults.
+pub struct Smt160FlashBackend<'a> {
+    flash_peripheral: &'a mut FLASH,
+}
 
-impl Smt160Flash {
-    pub const PAGE_START: u32 = 0x0800_FC00;
-    pub const MAGIC: u32 = 0x534D5431; // "SMT1"
+impl<'a> Smt160FlashBackend<'a> {
+    /// The starting memory address of the dedicated calibration Flash page.
+    pub const CALIBRATION_PAGE_START_ADDRESS: u32 = 0x0800_FC00;
 
-    /// Loads calibration data from the fixed flash page.
-    pub fn load() -> Option<Calibration> {
-        let addr = Self::PAGE_START as *const u32;
-        unsafe {
-            if core::ptr::read_volatile(addr) != Self::MAGIC {
-                return None;
-            }
+    /// Creates a new Flash storage backend.
+    pub fn new(flash_peripheral: &'a mut FLASH) -> Self {
+        Self { flash_peripheral }
+    }
+}
 
-            let m_bits = core::ptr::read_volatile(addr.add(1)) as i32;
-            let o_bits = core::ptr::read_volatile(addr.add(2)) as i32;
-            let crc_stored = (core::ptr::read_volatile(addr.add(3)) & 0xFF) as u8;
+impl<'a> ReadStorage for Smt160FlashBackend<'a> {
+    type Error = core::convert::Infallible;
 
-            let cal = Calibration {
-                multiplier: I16F16::from_bits(m_bits),
-                offset: I16F16::from_bits(o_bits),
-                p1_raw: None,
-                p2_raw: None,
-            };
-
-            if cal.crc8() == crc_stored {
-                Some(cal)
-            } else {
-                None
+    /// Reads a sequence of bytes from Flash memory starting at the specified offset.
+    fn read(&mut self, memory_offset: u32, data_buffer: &mut [u8]) -> Result<(), Self::Error> {
+        let source_address = (Self::CALIBRATION_PAGE_START_ADDRESS + memory_offset) as *const u8;
+        for (i, byte) in data_buffer.iter_mut().enumerate() {
+            unsafe {
+                *byte = core::ptr::read_volatile(source_address.add(i));
             }
         }
+        Ok(())
     }
 
-    /// Saves calibration data to the fixed flash page.
+    /// Returns the total storage capacity of the dedicated calibration page.
+    fn capacity(&self) -> usize {
+        1024 // 1KB Page
+    }
+}
+
+impl<'a> Storage for Smt160FlashBackend<'a> {
+    /// Writes a sequence of bytes to Flash memory.
     /// 
     /// # Safety
-    /// This method uses unsafe register access to perform page erase and program.
-    /// It should only be called during a calibration procedure.
-    pub fn save(flash: &mut FLASH, cal: &Calibration) -> Result<(), ()> {
-        let m_bits = cal.multiplier.to_bits() as u32;
-        let o_bits = cal.offset.to_bits() as u32;
-        let crc = cal.crc8() as u32;
+    /// This method performs an atomic Page Erase followed by a Half-Word Program 
+    /// sequence within a `critical-section`.
+    fn write(&mut self, memory_offset: u32, data_buffer: &[u8]) -> Result<(), Self::Error> {
+        critical_section::with(|_| {
+            unsafe {
+                // 1. Unlock Flash Controller
+                self.flash_peripheral.keyr().write(|w| w.key().bits(0x45670123));
+                self.flash_peripheral.keyr().write(|w| w.key().bits(0xCDEF89AB));
 
-        unsafe {
-            // 1. Unlock Flash
-            flash.keyr().write(|w| w.key().bits(0x45670123));
-            flash.keyr().write(|w| w.key().bits(0xCDEF89AB));
+                // 2. Erase the calibration page
+                while self.flash_peripheral.sr().read().bsy().bit_is_set() {}
+                self.flash_peripheral.cr().modify(|_, w| w.per().set_bit());
+                self.flash_peripheral.ar().write(|w| w.far().bits(Self::CALIBRATION_PAGE_START_ADDRESS));
+                self.flash_peripheral.cr().modify(|_, w| w.strt().set_bit());
+                while self.flash_peripheral.sr().read().bsy().bit_is_set() {}
+                self.flash_peripheral.cr().modify(|_, w| w.per().clear_bit());
 
-            // 2. Erase Page 63
-            while flash.sr().read().bsy().bit_is_set() {}
-            flash.cr().modify(|_, w| w.per().set_bit());
-            flash.ar().write(|w| w.far().bits(Self::PAGE_START));
-            flash.cr().modify(|_, w| w.strt().set_bit());
-            while flash.sr().read().bsy().bit_is_set() {}
-            flash.cr().modify(|_, w| w.per().clear_bit());
+                // 3. Program Data (16-bit Half-Word writes)
+                for i in (0..data_buffer.len()).step_by(2) {
+                    self.flash_peripheral.cr().modify(|_, w| w.pg().set_bit());
+                    let half_word = if i + 1 < data_buffer.len() {
+                        u16::from_le_bytes([data_buffer[i], data_buffer[i+1]])
+                    } else {
+                        u16::from_le_bytes([data_buffer[i], 0xFF])
+                    };
+                    
+                    let target_address = (Self::CALIBRATION_PAGE_START_ADDRESS + memory_offset + i as u32) as *mut u16;
+                    core::ptr::write_volatile(target_address, half_word);
+                    while self.flash_peripheral.sr().read().bsy().bit_is_set() {}
+                    self.flash_peripheral.cr().modify(|_, w| w.pg().clear_bit());
+                }
 
-            // 3. Program Words
-            let data = [Self::MAGIC, m_bits, o_bits, crc];
-            for (i, &word) in data.iter().enumerate() {
-                flash.cr().modify(|_, w| w.pg().set_bit());
-                let addr = (Self::PAGE_START + (i as u32 * 4)) as *mut u16;
-                
-                // STM32F1 programs 16 bits at a time
-                core::ptr::write_volatile(addr, word as u16);
-                while flash.sr().read().bsy().bit_is_set() {}
-                
-                core::ptr::write_volatile(addr.add(1), (word >> 16) as u16);
-                while flash.sr().read().bsy().bit_is_set() {}
-                
-                flash.cr().modify(|_, w| w.pg().clear_bit());
+                // 4. Lock Flash Controller
+                self.flash_peripheral.cr().modify(|_, w| w.lock().set_bit());
             }
-
-            // 4. Lock Flash
-            flash.cr().modify(|_, w| w.lock().set_bit());
-        }
+        });
 
         Ok(())
     }
