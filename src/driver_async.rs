@@ -1,22 +1,17 @@
-//! Async high-level driver for SMT160.
-
 use crate::decoder::Smt160Decoder;
-use crate::Smt160Error;
+use crate::{Reading, Smt160Error};
 use embedded_hal::digital::InputPin;
 use embedded_hal_async::digital::Wait;
-use fixed::types::I16F16;
 
 /// Async Wrapper for SMT160 utilizing native async traits.
 /// 
-/// This driver uses `embedded-hal-async` to wait for pin edges and calculates
-/// temperature using the provided `Smt160Decoder`.
+/// # Hazards
+/// - **Context Switching Latency**: The precision of this driver depends on the latency of the 
+///   async executor and the underlying hardware interrupt handling.
 /// 
-/// ### Example
-/// ```rust
-/// let decoder = Smt160Decoder::with_clock(1); // 1MHz clock
-/// let mut sensor = Smt160Async::new(pin, || timer.now_us(), decoder);
-/// let temp = sensor.read_temperature().await?;
-/// ```
+/// # Performance
+/// - **Non-Blocking**: This driver yields back to the executor while waiting for edges, making 
+///   it ideal for concurrent applications.
 pub struct Smt160Async<P, T> 
 where 
     P: Wait + InputPin,
@@ -33,10 +28,6 @@ where
     T: Fn() -> u64,
 {
     /// Creates a new async driver.
-    /// 
-    /// - `pin`: Implements `Wait` and `InputPin`.
-    /// - `get_time`: Closure returning the current timestamp (units must match `decoder`).
-    /// - `decoder`: Pre-configured `Smt160Decoder`.
     pub fn new(pin: P, get_time: T, decoder: Smt160Decoder) -> Self {
         Self {
             pin,
@@ -45,9 +36,9 @@ where
         }
     }
 
-    /// Reads the temperature using 16-sample filtering.
-    /// Returns the average temperature after 16 samples are collected.
-    pub async fn read_temperature(&mut self) -> Result<I16F16, Smt160Error> {
+    /// Reads the temperature using high-precision filtering.
+    /// Returns the filtered temperature reading once a full cycle is processed.
+    pub async fn read_temperature(&mut self) -> Result<Reading, Smt160Error> {
         loop {
             // Await pin change
             self.pin.wait_for_any_edge().await.map_err(|_| Smt160Error::Timeout)?;
@@ -60,7 +51,7 @@ where
 
             // Process edge
             match self.decoder.push_edge(is_rising, now) {
-                Ok(Some(temp)) => return Ok(temp),
+                Ok(Some(reading)) => return Ok(reading),
                 Ok(None) => continue,
                 Err(e) => {
                     self.decoder.reset();

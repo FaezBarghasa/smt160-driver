@@ -69,8 +69,8 @@ fn main() -> ! {
         
         // Option 2: Standard reading with timeout (36M ticks = 500ms)
         match smt160.read_temperature(36_000_000) {
-            Ok(temp) => {
-                info!("Temperature: {} C", temp.to_num::<f32>());
+            Ok(reading) => {
+                info!("Temperature: {} C, Status: {:?}", reading.value.to_num::<f32>(), reading.status);
             }
             Err(e) => {
                 error!("Driver Error: {}", e);

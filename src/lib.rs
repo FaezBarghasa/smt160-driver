@@ -29,8 +29,53 @@ pub mod decoder;
 pub mod driver_async;
 pub mod driver_blocking;
 pub mod i2c_telemetry;
+#[cfg(feature = "stm32f1")]
+pub mod stm32f1;
+pub mod calibration;
+pub mod telemetry;
 
-// use fixed::types::I16F16;
+use fixed::types::I16F16;
+
+use bitflags::bitflags;
+
+bitflags! {
+    /// Diagnostic status of the SMT160 sensor.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct Smt160Status: u8 {
+        /// Sensor is operating normally.
+        const OK = 0b0000_0000;
+        /// No edges detected for a significant period (Signal Loss).
+        const SIGNAL_LOSS = 0b0000_0001;
+        /// PWM frequency is outside the 1kHz-4kHz range.
+        const FREQUENCY_ERROR = 0b0000_0010;
+        /// Duty cycle is outside the physical 0.320-0.980 bounds.
+        const BOUNDARY_VIOLATION = 0b0000_0100;
+        /// High jitter detected in the incoming signal.
+        const JITTER_ALERT = 0b0000_1000;
+        /// Temperature reading is out of specified operating range.
+        const OUT_OF_BOUNDS = 0b0001_0000;
+    }
+}
+
+#[cfg(feature = "defmt")]
+impl defmt::Format for Smt160Status {
+    fn format(&self, fmt: defmt::Formatter) {
+        defmt::write!(fmt, "Smt160Status({:b})", self.bits());
+    }
+}
+
+// Backward compatibility or simpler naming if needed
+pub type SensorStatus = Smt160Status;
+
+/// A temperature reading with diagnostic metadata.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct Reading {
+    /// The temperature value in Celsius (°C).
+    pub value: I16F16,
+    /// The operational status of the sensor at the time of reading.
+    pub status: SensorStatus,
+}
 
 /// All potential failures of the SMT160 processing pipeline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,6 +88,7 @@ pub enum Smt160Error {
     SequenceViolation,
     HighJitter,
     I2cError,
+    InvalidConfiguration,
 }
 
 impl core::fmt::Display for Smt160Error {
@@ -55,6 +101,7 @@ impl core::fmt::Display for Smt160Error {
             Self::SequenceViolation => write!(f, "Sequence Violation"),
             Self::HighJitter => write!(f, "High Jitter"),
             Self::I2cError => write!(f, "I2C Error"),
+            Self::InvalidConfiguration => write!(f, "Invalid Configuration"),
         }
     }
 }

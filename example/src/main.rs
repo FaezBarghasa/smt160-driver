@@ -106,7 +106,7 @@ mod app {
             let timestamp_us = ((*overflows as u64) << 16) | (capture as u64);
 
             match decoder.push_edge(true, timestamp_us) {
-                Ok(Some(temp)) => info!("Temperature: {} C", temp.to_num::<f32>()),
+                Ok(Some(reading)) => info!("Temperature: {} C, Status: {:?}", reading.value.to_num::<f32>(), reading.status),
                 Ok(None) => {} // Engine needs more pulses to stabilize
                 Err(e) => defmt::error!("Sensor Error: {:?}", e),
             }
@@ -121,7 +121,7 @@ mod app {
             let timestamp_us = ((*overflows as u64) << 16) | (capture as u64);
 
             match decoder.push_edge(false, timestamp_us) {
-                Ok(Some(temp)) => info!("Temperature: {} C", temp.to_num::<f32>()),
+                Ok(Some(reading)) => info!("Temperature: {} C, Status: {:?}", reading.value.to_num::<f32>(), reading.status),
                 Ok(None) => {}
                 Err(e) => defmt::error!("Sensor Error: {:?}", e),
             }

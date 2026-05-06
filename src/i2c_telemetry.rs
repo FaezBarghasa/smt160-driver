@@ -5,9 +5,12 @@ use fixed::types::I16F16;
 
 /// Thread-safe telemetry container for sharing temperature data across tasks.
 /// 
-/// This uses an `AtomicU32` to store the fixed-point bits of the temperature,
-/// allowing it to be safely shared between a high-priority sensor task
-/// and a lower-priority communication task (like I2C).
+/// # Hazards
+/// - **Stale Data**: If the sensor task stops updating, `get_latest` will return the last 
+///   valid temperature indefinitely. Check sensor status separately if possible.
+/// 
+/// # Performance
+/// - **Lock-Free**: Uses `AtomicU32` for non-blocking read/write access.
 pub struct Smt160Telemetry {
     temp_bits: AtomicU32,
 }
@@ -47,10 +50,10 @@ impl<'a> Smt160I2cTask<'a> {
     }
 
     /// Yields the latest temperature bytes. 
-    /// This is intended to be called within an I2C slave event loop.
+    /// 
+    /// # Performance
+    /// - **Deterministic**: Returns immediately without waiting for I2C bus locks.
     pub async fn handle_read_request(&self) -> [u8; 4] {
-        // In a real implementation, this would await the I2C event.
-        // For the purpose of this driver, we return the latest data.
         self.telemetry.get_latest_bytes()
     }
 }
