@@ -30,17 +30,17 @@ mod app {
     fn init(cx: init::Context) -> (Shared, Local) {
         let mut flash = cx.device.FLASH.constrain();
         let rcc = cx.device.RCC.constrain();
-        let mut sys_clocks = rcc.freeze(
+        let mut clocks = rcc.freeze(
             stm32f1xx_hal::rcc::Config::hse(8.MHz())
                 .sysclk(72.MHz())
                 .pclk1(36.MHz()),
             &mut flash.acr,
         );
 
-        let mut gpioa = cx.device.GPIOA.split(&mut sys_clocks);
+        let mut gpioa = cx.device.GPIOA.split(&mut clocks);
         let _pa0 = gpioa.pa0.into_floating_input(&mut gpioa.crl);
 
-        let decoder = Smt160Decoder::from_clocks(&sys_clocks);
+        let decoder = Smt160Decoder::from_clocks(&clocks.clocks);
         let capture = Smt160Capture::new_tim2(cx.device.TIM2, decoder);
 
         defmt::info!("SMT160 Jitter Bench Started (72MHz)");

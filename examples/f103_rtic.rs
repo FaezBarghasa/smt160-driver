@@ -36,14 +36,14 @@ mod app {
     fn init(cx: init::Context) -> (Shared, Local) {
         let mut flash = cx.device.FLASH.constrain();
         let rcc = cx.device.RCC.constrain();
-        let mut clocks = rcc.freeze(
+        let mut rcc = rcc.freeze(
             stm32f1xx_hal::rcc::Config::hse(8.MHz())
                 .sysclk(72.MHz())
                 .pclk1(36.MHz()),
             &mut flash.acr,
         );
 
-        let mut gpioa = cx.device.GPIOA.split(&mut clocks);
+        let mut gpioa = cx.device.GPIOA.split(&mut rcc.apb2);
         let _pa0 = gpioa.pa0.into_floating_input(&mut gpioa.crl);
 
         let tim2 = cx.device.TIM2;
@@ -67,7 +67,7 @@ mod app {
         (
             Shared { current_temp: None },
             Local {
-                decoder: Smt160Decoder::from_clocks(&clocks),
+                decoder: Smt160Decoder::from_clocks(&rcc.clocks),
                 tim2,
                 overflows: 0,
                 monotonic_base: 0,
