@@ -4,21 +4,19 @@
 use defmt_rtt as _;
 use panic_probe as _;
 use rtic::app;
-use smt160_driver::{Smt160Dma, Uninitialized, Ready};
+use smt160_driver::{Smt160, Ready, Smt160Status};
 use stm32f1xx_hal::{
     pac,
     prelude::*,
-    gpio::{gpioa::PA1, Input, Floating},
 };
 
 #[app(device = pac, dispatchers = [SPI1])]
 mod app {
     use super::*;
-    use smt160_driver::Smt160Status;
 
     #[shared]
     struct Shared {
-        driver: Smt160Dma<Ready, pac::TIM2, pac::DMA1_CH5>,
+        pub driver: Smt160<Ready, pac::TIM2, stm32f1xx_hal::dma::dma1::C5>,
     }
 
     #[local]
@@ -27,18 +25,18 @@ mod app {
     #[init]
     fn init(cx: init::Context) -> (Shared, Local) {
         let mut flash = cx.device.FLASH.constrain();
-        let rcc = cx.device.RCC.constrain();
+        let mut rcc = cx.device.RCC.freeze(
+            stm32f1xx_hal::rcc::Config::hse(8.MHz())
+                .sysclk(72.MHz())
+                .pclk1(36.MHz()),
+            &mut flash.acr,
+        );
 
-        // 72MHz is the standard high-performance clock for STM32F103
-        let clocks = rcc.cfgr
-            .use_hse(8.MHz())
-            .sysclk(72.MHz())
-            .pclk1(36.MHz())
-            .freeze(&mut flash.acr);
+        let clocks = rcc.clocks;
 
         defmt::info!("System Clock: {} Hz", clocks.sysclk().to_Hz());
 
-        let mut gpioa = cx.device.GPIOA.split();
+        let mut gpioa = cx.device.GPIOA.split(&mut rcc);
         let _pin = gpioa.pa1.into_floating_input(&mut gpioa.crl);
 
         // Static buffer for DMA double-buffering
@@ -46,12 +44,14 @@ mod app {
 
         // Enable peripheral clocks manually as required by PAC access
         let rcc_pac = unsafe { &*pac::RCC::ptr() };
-        rcc_pac.apb1enr.modify(|_, w| w.tim2en().set_bit());
-        rcc_pac.ahbenr.modify(|_, w| w.dma1en().set_bit());
+        rcc_pac.apb1enr().modify(|_, w| w.tim2en().set_bit());
+        rcc_pac.ahbenr().modify(|_, w| w.dma1en().set_bit());
 
         // Initialize driver
-        let driver_uninit = Smt160Dma::new(cx.device.TIM2, cx.device.DMA1_CH5, unsafe { &mut DMA_BUFFER });
-        let driver = driver_uninit.init(&clocks).expect("Clock validation failed");
+        let dma1 = cx.device.DMA1.split(&mut rcc);
+        let driver = Smt160::new(cx.device.TIM2, dma1.5, unsafe { &mut DMA_BUFFER })
+            .init(&clocks)
+            .expect("Clock validation failed");
 
         defmt::info!("SMT160 Driver Initialized");
 

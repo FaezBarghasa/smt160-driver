@@ -5,7 +5,7 @@
 //! attempting to read from the sensor before the hardware peripherals (Timers, DMA, Clocks)
 //! have been properly initialized and validated.
 
-use core::marker::PhantomData;
+// Unused import removed
 
 /// Zero-sized marker struct representing an uninitialized SMT160 driver.
 ///
@@ -19,32 +19,7 @@ pub struct Uninitialized;
 /// to meet the 0.05°C precision requirements and the DMA/Timer subsystems are active.
 pub struct Ready;
 
-/// The main SMT160 driver structure.
-///
-/// The `State` parameter is used to track the initialization status of the hardware.
-/// 
-/// # Typestate Benefits:
-/// - **Zero-Cost:** State transitions are checked at compile time and have no runtime overhead.
-/// - **Safety:** Methods like `poll_dma()` are only implemented for `Smt160<Ready>`, 
-///   making it physically impossible to access uninitialized hardware in safe Rust.
-pub struct Smt160<State, TIM, DMA> {
-    pub(crate) _state: PhantomData<State>,
-    pub(crate) timer: TIM,
-    pub(crate) dma: DMA,
-    // Additional fields will be added in Phase 4
-}
+// The Smt160 struct is now defined in lib.rs to centralize the driver logic 
+// while using the markers from this module.
 
-impl<TIM, DMA> Smt160<Uninitialized, TIM, DMA> {
-    /// Creates a new, uninitialized instance of the SMT160 driver.
-    /// 
-    /// This method does not touch hardware; it merely takes ownership of the 
-    /// peripherals to be configured later during the `init()` transition.
-    pub const fn new(timer: TIM, dma: DMA) -> Self {
-        Self {
-            _state: PhantomData,
-            timer,
-            dma,
-        }
-    }
-}
 

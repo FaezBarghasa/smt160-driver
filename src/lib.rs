@@ -17,7 +17,7 @@ pub mod telemetry;
 pub mod hal;
 
 pub use error::Smt160Error;
-pub use types::{Uninitialized, Ready, Smt160};
+pub use types::{Uninitialized, Ready};
 pub use math::SignalDecoder;
 pub use telemetry::Smt160Status;
 
@@ -26,10 +26,10 @@ use core::marker::PhantomData;
 use crate::hal::{Smt160TimerInstance, Smt160DmaChannel};
 
 /// The industrial-grade SMT160 driver using DMA Burst.
-pub struct Smt160Dma<State, TIM, DMA> {
+pub struct Smt160<State, TIM, DMA> {
     _state: PhantomData<State>,
-    timer: TIM,
-    dma: DMA,
+    pub(crate) timer: TIM,
+    pub(crate) dma: DMA,
     buffer: &'static mut [u32; 4],
     last_period: u32,
     watchdog_ticks: u32,
@@ -37,7 +37,7 @@ pub struct Smt160Dma<State, TIM, DMA> {
     pub status: Smt160Status,
 }
 
-impl<TIM, DMA> Smt160Dma<Uninitialized, TIM, DMA> 
+impl<TIM, DMA> Smt160<Uninitialized, TIM, DMA> 
 where 
     TIM: Smt160TimerInstance,
     DMA: Smt160DmaChannel,
@@ -57,7 +57,7 @@ where
     }
 
     /// Initializes hardware and transitions to the `Ready` state.
-    pub fn init(self, clocks: &stm32f1xx_hal::rcc::Clocks) -> Result<Smt160Dma<Ready, TIM, DMA>, Smt160Error> {
+    pub fn init(self, clocks: &stm32f1xx_hal::rcc::Clocks) -> Result<Smt160<Ready, TIM, DMA>, Smt160Error> {
         crate::hal::validate_clocks(clocks)?;
         
         self.timer.reset_hardware();
@@ -73,7 +73,7 @@ where
             );
         }
 
-        Ok(Smt160Dma {
+        Ok(Smt160 {
             _state: PhantomData,
             timer: self.timer,
             dma: self.dma,
@@ -86,7 +86,7 @@ where
     }
 }
 
-impl<TIM, DMA> Smt160Dma<Ready, TIM, DMA> 
+impl<TIM, DMA> Smt160<Ready, TIM, DMA> 
 where 
     TIM: Smt160TimerInstance,
     DMA: Smt160DmaChannel,
