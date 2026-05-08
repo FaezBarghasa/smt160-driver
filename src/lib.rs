@@ -4,11 +4,6 @@
 //!
 //! This driver uses hardware-level DMA Burst and Timer Reset Mode to achieve 
 //! absolute zero-jitter capture of SMT160 temperature sensor signals.
-//!
-//! ## Features
-//! - **Typestate Safety:** Compile-time prevention of uninitialized access.
-//! - **DMA Burst:** Zero CPU overhead during signal capture.
-//! - **Fixed-Point Math:** Deterministic 0.05°C precision on Cortex-M3.
 
 pub mod error;
 pub mod types;
@@ -64,7 +59,6 @@ where
         self.timer.setup_pwm_input();
         self.timer.setup_dma_burst();
 
-        // Safety: Buffer is 'static and correctly sized for circular capture (2 signals * 2 halves = 4)
         unsafe {
             self.dma.setup_circular_capture(
                 self.timer.dmar_address(),
@@ -92,20 +86,13 @@ where
     DMA: Smt160DmaChannel,
 {
     /// Polls the DMA for new data and performs jitter diagnostics.
-    /// 
-    /// This method parses the DMA ISR flags to determine which half of the 
-    /// circular buffer is safe to read, ensuring zero-copy and zero-jitter.
     pub fn poll_dma(&mut self) -> Option<I32F32> {
         let mut sample = None;
 
         if self.dma.is_half_transfer() {
-            // DMA finished first half [0..2]. It is now writing [2..4].
-            // CCR1 (Period) is at index 0, CCR2 (Active) is at index 1.
             sample = Some((self.buffer[0], self.buffer[1]));
             self.dma.clear_interrupt_flags();
         } else if self.dma.is_transfer_complete() {
-            // DMA finished second half [2..4]. It is now wrapping back to [0..2].
-            // CCR1 (Period) is at index 2, CCR2 (Active) is at index 3.
             sample = Some((self.buffer[2], self.buffer[3]));
             self.dma.clear_interrupt_flags();
         }
@@ -137,9 +124,7 @@ where
         }
     }
 
-    /// Watchdog called every 1ms to detect sensor flatline or ESD freeze.
-    /// 
-    /// `current_dma_count` is retrieved from the CNDTR register.
+    /// Watchdog called every 1ms to detect sensor flatline.
     pub fn tick_watchdog(&mut self, current_dma_count: u16) -> Result<(), Smt160Error> {
         if current_dma_count == self.last_dma_count {
             self.watchdog_ticks += 1;
@@ -149,7 +134,6 @@ where
         }
         self.last_dma_count = current_dma_count;
 
-        // If no DMA transaction occurs for 5ms (sensor max period is ~1ms)
         if self.watchdog_ticks >= 5 {
             self.status.insert(Smt160Status::SENSOR_TIMEOUT);
             return Err(Smt160Error::SensorTimeout);
@@ -158,7 +142,6 @@ where
     }
 
     /// Autonomous Hardware Recovery.
-    /// Disables peripherals, clears flags, and re-initializes to recover from ESD hardware freezes.
     pub fn hard_reset(&mut self) {
         self.dma.disable();
         self.timer.reset_hardware();
@@ -166,7 +149,6 @@ where
         self.watchdog_ticks = 0;
         self.last_period = 0;
         
-        // Re-init
         self.timer.setup_pwm_input();
         self.timer.setup_dma_burst();
         unsafe {
@@ -178,4 +160,3 @@ where
         }
     }
 }
-

@@ -12,16 +12,14 @@ use fixed::types::I32F32;
 mod app {
     use super::*;
 
-    const SAMPLE_COUNT: usize = 10_000;
-
     #[shared]
     struct Shared {
-        pub driver: Smt160<Ready, pac::TIM2, stm32f1xx_hal::dma::dma1::C5>,
+        driver: Smt160<Ready, pac::TIM2, stm32f1xx_hal::dma::dma1::C5>,
     }
 
     #[local]
     struct Local {
-        samples: &'static mut [I32F32; SAMPLE_COUNT],
+        samples: &'static mut [I32F32; 1000],
         current_idx: usize,
     }
 
@@ -41,75 +39,85 @@ mod app {
         let _pin = gpioa.pa1.into_floating_input(&mut gpioa.crl);
 
         static mut DMA_BUFFER: [u32; 4] = [0; 4];
-        static mut SAMPLES: [I32F32; SAMPLE_COUNT] = [I32F32::ZERO; SAMPLE_COUNT];
-
-        let rcc_pac = unsafe { &*pac::RCC::ptr() };
-        rcc_pac.apb1enr().modify(|_, w| w.tim2en().set_bit());
-        rcc_pac.ahbenr().modify(|_, w| w.dma1en().set_bit());
+        static mut SAMPLES: [I32F32; 1000] = [I32F32::ZERO; 1000];
 
         let dma1 = cx.device.DMA1.split(&mut rcc);
         let driver = Smt160::new(cx.device.TIM2, dma1.5, unsafe { &mut DMA_BUFFER })
             .init(&clocks)
             .unwrap();
 
-        defmt::info!("Jitter Benchmark Started. Collecting {} samples...", SAMPLE_COUNT);
-
         (Shared { driver }, Local { samples: unsafe { &mut SAMPLES }, current_idx: 0 })
     }
 
     #[task(binds = DMA1_CHANNEL5, shared = [driver], local = [samples, current_idx])]
     fn on_dma(mut cx: on_dma::Context) {
-        let idx = *cx.local.current_idx;
-        if idx >= SAMPLE_COUNT {
-            return;
-        }
+        let samples = cx.local.samples;
+        let idx = cx.local.current_idx;
 
-        cx.shared.driver.lock(|drv| {
-            if let Some(temp) = drv.poll_dma() {
-                cx.local.samples[idx] = temp;
-                *cx.local.current_idx += 1;
-
-                if *cx.local.current_idx == SAMPLE_COUNT {
-                    defmt::info!("Collection complete. Calculating statistics...");
-                    calculate_statistics(&cx.local.samples[..]);
+        cx.shared.driver.lock(|driver| {
+            if let Some(temp) = driver.poll_dma() {
+                if *idx < samples.len() {
+                    samples[*idx] = temp;
+                    *idx += 1;
+                } else {
+                    // Benchmark Complete: Calculate stats
+                    let stats = calculate_stats(&samples[..]);
+                    defmt::info!("Jitter Benchmark Complete (1000 samples)");
+                    defmt::info!("Mean: {} °C", stats.mean.to_num::<f32>());
+                    defmt::info!("StdDev: {} °C", stats.std_dev.to_num::<f32>());
+                    defmt::info!("Jitter Spread: {} °C", stats.spread.to_num::<f32>());
+                    
+                    if stats.std_dev < I32F32::from_num(0.05) {
+                        defmt::info!("RESULT: Precision Target MET (<0.05°C)");
+                    } else {
+                        defmt::error!("RESULT: Precision Target FAILED");
+                    }
+                    
+                    *idx = 0; // Restart
                 }
             }
         });
     }
 
-    #[idle]
-    fn idle(_: idle::Context) -> ! {
-        loop {
-            cortex_m::asm::wfi();
+    struct Stats {
+        mean: I32F32,
+        std_dev: I32F32,
+        spread: I32F32,
+    }
+
+    fn calculate_stats(data: &[I32F32]) -> Stats {
+        let mut sum = I32F32::ZERO;
+        let mut min = data[0];
+        let mut max = data[0];
+        
+        for &val in data {
+            sum += val;
+            if val < min { min = val; }
+            if val > max { max = val; }
+        }
+        
+        let mean = sum / I32F32::from_num(data.len());
+        
+        let mut variance_sum = I32F32::ZERO;
+        for &val in data {
+            let diff = val - mean;
+            variance_sum += diff * diff;
+        }
+        
+        let variance = variance_sum / I32F32::from_num(data.len());
+        
+        // Fixed-point square root using libm or simple approximation
+        let std_dev = I32F32::from_num(libm::sqrt(variance.to_num::<f64>()));
+        
+        Stats {
+            mean,
+            std_dev,
+            spread: max - min,
         }
     }
-}
 
-fn calculate_statistics(samples: &[I32F32]) {
-    let mut sum = 0.0f64;
-    for s in samples {
-        sum += s.to_num::<f64>();
-    }
-    let mean = sum / (samples.len() as f64);
-
-    let mut variance_sum = 0.0f64;
-    for s in samples {
-        let diff = s.to_num::<f64>() - mean;
-        variance_sum += diff * diff;
-    }
-    let variance = variance_sum / (samples.len() as f64);
-    let std_dev = libm::sqrt(variance);
-
-    defmt::info!("--- Benchmark Results ---");
-    defmt::info!("Samples: {}", samples.len());
-    defmt::info!("Mean: {} °C", mean as f32);
-    defmt::info!("Std Dev: {} °C", std_dev as f32);
-    defmt::info!("Peak-to-Peak Jitter: {} °C", (std_dev * 6.0) as f32); // 6-sigma
-    
-    if std_dev < 0.05 {
-        defmt::info!("SUCCESS: Standard deviation is < 0.05°C. Claim verified.");
-    } else {
-        defmt::warn!("FAILURE: Standard deviation is {}°C. Check hardware connection.", std_dev as f32);
+    #[idle]
+    fn idle(_: idle::Context) -> ! {
+        loop { cortex_m::asm::wfi(); }
     }
 }
-

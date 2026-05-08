@@ -1,4 +1,7 @@
 //! Error and Status enumerations for the SMT160 driver.
+//!
+//! This module defines the core error types used throughout the driver, 
+//! designed for industrial safety and efficient telemetry.
 
 use core::fmt;
 
@@ -34,7 +37,7 @@ impl fmt::Display for Smt160Error {
             Self::ClockTooSlow => write!(f, "Clock frequency insufficient for 0.05°C precision"),
             Self::InvalidBuffer => write!(f, "Invalid DMA buffer configuration"),
             Self::SensorTimeout => write!(f, "Sensor pulse timeout (disconnected or ESD freeze)"),
-            Self::OutOfBounds => write!(f, "Measurement out of physical sensor bounds"),
+            Self::OutOfBounds => write!(f, "Measurement out of bounds or signal corrupted"),
         }
     }
 }

@@ -5,8 +5,6 @@
 //! attempting to read from the sensor before the hardware peripherals (Timers, DMA, Clocks)
 //! have been properly initialized and validated.
 
-// Unused import removed
-
 /// Zero-sized marker struct representing an uninitialized SMT160 driver.
 ///
 /// In this state, the driver has no ownership of hardware peripherals and 
@@ -18,8 +16,3 @@ pub struct Uninitialized;
 /// Transitions to this state only occur after the clock frequency has been verified 
 /// to meet the 0.05°C precision requirements and the DMA/Timer subsystems are active.
 pub struct Ready;
-
-// The Smt160 struct is now defined in lib.rs to centralize the driver logic 
-// while using the markers from this module.
-
-

@@ -109,7 +109,6 @@ mod tests {
         /// I32F32 value (encoded as its bit representation).
         #[test]
         fn proof_nlc_never_panics(temp_bits in i64::MIN..i64::MAX) {
-            // We map the i64 to i64 to cover the full bit range of I32F32 (which is 64-bit)
             let temp = I32F32::from_bits(temp_bits);
             let _ = SignalDecoder::apply_nlc(temp);
         }
