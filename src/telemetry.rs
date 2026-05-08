@@ -1,21 +1,27 @@
 use bitflags::bitflags;
 
 bitflags! {
-    /// Industrial diagnostic status flags for the SMT160 sensor.
-    ///
-    /// These flags are bit-packed to allow for efficient telemetry transmission 
-    /// and real-time monitoring without heap allocation.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+    /// Industrial telemetry status for the SMT160 driver.
+    /// 
+    /// These flags allow the application layer to monitor the electrical 
+    /// health of the sensor connection and the signal integrity.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct Smt160Status: u8 {
-        /// Signal jitter exceeds the 0.5% safety threshold. 
-        /// Indicates potential EMI or wiring issues.
-        const JITTER_DETECTED = 0b0000_0001;
+        /// Signal jitter exceeds 0.5% threshold. Indicates EMI or loose wiring.
+        const JITTER_DETECTED = 1 << 0;
         
-        /// The decoded temperature or duty cycle is outside physical bounds.
-        const OUT_OF_BOUNDS  = 0b0000_0010;
+        /// Measurement is outside physical bounds (-45°C to 130°C).
+        const OUT_OF_BOUNDS  = 1 << 1;
         
-        /// No signal pulses detected within the watchdog window.
-        const SENSOR_TIMEOUT = 0b0000_0100;
+        /// Sensor pulse not detected for > 5ms. Indicates disconnection or hardware freeze.
+        const SENSOR_TIMEOUT  = 1 << 2;
     }
 }
+
+#[cfg(feature = "defmt")]
+impl defmt::Format for Smt160Status {
+    fn format(&self, f: defmt::Formatter) {
+        defmt::write!(f, "Smt160Status({:b})", self.bits());
+    }
+}
+

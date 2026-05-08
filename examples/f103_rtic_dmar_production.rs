@@ -1,90 +1,80 @@
-//! Production RTIC 2.1 Template for SMT160 Industrial Deployment.
-//!
-//! This example demonstrates how to configure the STM32F103 clocks, 
-//! initialize the SMT160 driver with DMA Burst mode, and process 
-//! readings in a high-priority hardware task.
-
 #![no_main]
 #![no_std]
 
-use defmt_rtt as _; // global logger
+use defmt_rtt as _;
 use panic_probe as _;
+use rtic::app;
+use smt160_driver::{Smt160Dma, Uninitialized, Ready};
+use stm32f1xx_hal::{
+    pac,
+    prelude::*,
+    gpio::{gpioa::PA1, Input, Floating},
+};
 
-#[rtic::app(device = stm32f1xx_hal::pac, dispatchers = [EXTI0])]
+#[app(device = pac, dispatchers = [SPI1])]
 mod app {
-    use smt160_driver::{Smt160Dma, Uninitialized, Ready};
-    use stm32f1xx_hal::{
-        pac,
-        prelude::*,
-        gpio::{gpioa::PA1, Input, Floating},
-        timer::Timer,
-    };
-    use fixed::types::I32F32;
+    use super::*;
+    use smt160_driver::Smt160Status;
 
     #[shared]
-    struct Shared {}
+    struct Shared {
+        driver: Smt160Dma<Ready, pac::TIM2, pac::DMA1_CH5>,
+    }
 
     #[local]
-    struct Local {
-        smt160: Smt160Dma<Ready, pac::TIM2, pac::DMA1_CH5>,
-    }
+    struct Local {}
 
     #[init]
     fn init(cx: init::Context) -> (Shared, Local) {
         let mut flash = cx.device.FLASH.constrain();
         let rcc = cx.device.RCC.constrain();
 
-        // 1. Configure Clocks to exactly 72MHz for maximum precision
+        // 72MHz is the standard high-performance clock for STM32F103
         let clocks = rcc.cfgr
             .use_hse(8.MHz())
             .sysclk(72.MHz())
-            .pclk1(36.MHz()) // PCLK1 is at 36MHz, Timers at 72MHz (2x)
-            .freeze(&mut flash);
+            .pclk1(36.MHz())
+            .freeze(&mut flash.acr);
+
+        defmt::info!("System Clock: {} Hz", clocks.sysclk().to_Hz());
 
         let mut gpioa = cx.device.GPIOA.split();
-        
-        // 2. Configure PA1 for TIM2_CH2 (Input Capture)
         let _pin = gpioa.pa1.into_floating_input(&mut gpioa.crl);
 
-        // 3. Static buffer for DMA Double Buffering
-        static mut BUFFER: [u32; 4] = [0u32; 4];
+        // Static buffer for DMA double-buffering
+        static mut DMA_BUFFER: [u32; 4] = [0; 4];
 
-        // 4. Initialize SMT160 Driver
-        let smt160_uninit = Smt160Dma::new(
-            cx.device.TIM2, 
-            cx.device.DMA1_CH5, 
-            unsafe { &mut *core::ptr::addr_of_mut!(BUFFER) }
-        );
+        // Enable peripheral clocks manually as required by PAC access
+        let rcc_pac = unsafe { &*pac::RCC::ptr() };
+        rcc_pac.apb1enr.modify(|_, w| w.tim2en().set_bit());
+        rcc_pac.ahbenr.modify(|_, w| w.dma1en().set_bit());
 
-        let smt160 = smt160_uninit.init(&clocks).expect("Clock validation failed");
+        // Initialize driver
+        let driver_uninit = Smt160Dma::new(cx.device.TIM2, cx.device.DMA1_CH5, unsafe { &mut DMA_BUFFER });
+        let driver = driver_uninit.init(&clocks).expect("Clock validation failed");
 
-        defmt::info!("SMT160 Industrial Driver Initialized at 72MHz");
+        defmt::info!("SMT160 Driver Initialized");
 
-        (Shared {}, Local { smt160 })
+        (Shared { driver }, Local {})
     }
 
-    /// High-Priority Hardware Task triggered by DMA Transfer Complete/Half-Transfer
-    #[task(binds = DMA1_CHANNEL5, local = [smt160], priority = 5)]
-    fn on_dma_capture(cx: on_dma_capture::Context) {
-        // Poll the driver for new temperature data
-        if let Some(temp) = cx.local.smt160.poll_dma() {
-            defmt::info!("Temperature: {} °C", temp.to_num::<f32>());
-        }
-
-        // Handle jitter or timeout alerts
-        if cx.local.smt160.status.contains(smt160_driver::Smt160Status::JITTER_DETECTED) {
-            defmt::warn!("Industrial Alert: High EMI/Jitter Detected");
-        }
-
-        // Clear DMA flags to acknowledge the interrupt
-        // In a real implementation, you'd clear the IFCR register here.
+    #[task(binds = DMA1_CHANNEL5, shared = [driver])]
+    fn on_dma(mut cx: on_dma::Context) {
+        cx.shared.driver.lock(|drv| {
+            if let Some(temp) = drv.poll_dma() {
+                let status = drv.status;
+                if status.contains(Smt160Status::JITTER_DETECTED) {
+                    defmt::warn!("Jitter detected! Signal integrity compromised.");
+                }
+                defmt::info!("Temperature: {} °C", temp.to_num::<f32>());
+            }
+        });
     }
 
-    /// Background monitoring task
     #[idle]
     fn idle(_: idle::Context) -> ! {
         loop {
-            core::hint::spin_loop();
+            cortex_m::asm::wfi();
         }
     }
 }

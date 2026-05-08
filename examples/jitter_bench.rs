@@ -1,108 +1,112 @@
-//! Jitter Benchmark Tool for SMT160.
-//!
-//! Accumulates 10,000 samples and computes the standard deviation 
-//! to mathematically prove the <0.05°C precision claim.
-
 #![no_main]
 #![no_std]
 
 use defmt_rtt as _;
 use panic_probe as _;
+use rtic::app;
+use smt160_driver::{Smt160Dma, Ready};
+use stm32f1xx_hal::{pac, prelude::*};
+use fixed::types::I32F32;
 
-#[rtic::app(device = stm32f1xx_hal::pac, dispatchers = [EXTI0])]
+#[app(device = pac, dispatchers = [SPI1])]
 mod app {
-    use smt160_driver::{Smt160Dma, Ready};
-    use stm32f1xx_hal::{pac, prelude::*};
+    use super::*;
 
     const SAMPLE_COUNT: usize = 10_000;
-    static mut SAMPLES: [f32; SAMPLE_COUNT] = [0.0; SAMPLE_COUNT];
 
     #[shared]
-    struct Shared {}
+    struct Shared {
+        driver: Smt160Dma<Ready, pac::TIM2, pac::DMA1_CH5>,
+    }
 
     #[local]
     struct Local {
-        smt160: Smt160Dma<Ready, pac::TIM2, pac::DMA1_CH5>,
-        sample_idx: usize,
+        samples: &'static mut [I32F32; SAMPLE_COUNT],
+        current_idx: usize,
     }
 
     #[init]
     fn init(cx: init::Context) -> (Shared, Local) {
         let mut flash = cx.device.FLASH.constrain();
         let rcc = cx.device.RCC.constrain();
-        let clocks = rcc.cfgr.use_hse(8.MHz()).sysclk(72.MHz()).freeze(&mut flash);
+
+        let clocks = rcc.cfgr
+            .use_hse(8.MHz())
+            .sysclk(72.MHz())
+            .pclk1(36.MHz())
+            .freeze(&mut flash.acr);
 
         let mut gpioa = cx.device.GPIOA.split();
         let _pin = gpioa.pa1.into_floating_input(&mut gpioa.crl);
 
-        static mut BUFFER: [u32; 4] = [0u32; 4];
-        let smt160 = Smt160Dma::new(
-            cx.device.TIM2, 
-            cx.device.DMA1_CH5, 
-            unsafe { &mut *core::ptr::addr_of_mut!(BUFFER) }
-        ).init(&clocks).unwrap();
+        static mut DMA_BUFFER: [u32; 4] = [0; 4];
+        static mut SAMPLES: [I32F32; SAMPLE_COUNT] = [I32F32::ZERO; SAMPLE_COUNT];
 
-        defmt::info!("Starting Jitter Benchmark (10,000 samples)...");
+        let rcc_pac = unsafe { &*pac::RCC::ptr() };
+        rcc_pac.apb1enr.modify(|_, w| w.tim2en().set_bit());
+        rcc_pac.ahbenr.modify(|_, w| w.dma1en().set_bit());
 
-        (Shared {}, Local { smt160, sample_idx: 0 })
+        let driver = Smt160Dma::new(cx.device.TIM2, cx.device.DMA1_CH5, unsafe { &mut DMA_BUFFER })
+            .init(&clocks)
+            .unwrap();
+
+        defmt::info!("Jitter Benchmark Started. Collecting {} samples...", SAMPLE_COUNT);
+
+        (Shared { driver }, Local { samples: unsafe { &mut SAMPLES }, current_idx: 0 })
     }
 
-    #[task(binds = DMA1_CHANNEL5, local = [smt160, sample_idx], priority = 5)]
-    fn on_dma(cx: on_dma::Context) {
-        if *cx.local.sample_idx < SAMPLE_COUNT {
-            if let Some(temp) = cx.local.smt160.poll_dma() {
-                let val = temp.to_num::<f32>();
-                unsafe { SAMPLES[*cx.local.sample_idx] = val; }
-                *cx.local.sample_idx += 1;
+    #[task(binds = DMA1_CHANNEL5, shared = [driver], local = [samples, current_idx])]
+    fn on_dma(mut cx: on_dma::Context) {
+        let idx = *cx.local.current_idx;
+        if idx >= SAMPLE_COUNT {
+            return;
+        }
 
-                if *cx.local.sample_idx == SAMPLE_COUNT {
-                    compute_bench();
+        cx.shared.driver.lock(|drv| {
+            if let Some(temp) = drv.poll_dma() {
+                cx.local.samples[idx] = temp;
+                *cx.local.current_idx += 1;
+
+                if *cx.local.current_idx == SAMPLE_COUNT {
+                    defmt::info!("Collection complete. Calculating statistics...");
+                    calculate_statistics(cx.local.samples);
                 }
             }
-        }
+        });
     }
 
-    fn compute_bench() {
-        let mut sum = 0.0;
-        let mut sum_sq = 0.0;
-        
-        unsafe {
-            for &s in SAMPLES.iter() {
-                sum += s;
-                sum_sq += s * s;
-            }
+    fn calculate_statistics(samples: &[I32F32]) {
+        let mut sum = 0.0f64;
+        for &s in samples {
+            sum += s.to_num::<f64>();
         }
+        let mean = sum / (samples.len() as f64);
 
-        let mean = sum / SAMPLE_COUNT as f32;
-        let variance = (sum_sq / SAMPLE_COUNT as f32) - (mean * mean);
-        let std_dev = sqrt_f32(variance);
+        let mut variance_sum = 0.0f64;
+        for &s in samples {
+            let diff = s.to_num::<f64>() - mean;
+            variance_sum += diff * diff;
+        }
+        let variance = variance_sum / (samples.len() as f64);
+        let std_dev = libm::sqrt(variance);
 
-        defmt::info!("Benchmark Complete!");
-        defmt::info!("Mean Temp: {} °C", mean);
-        defmt::info!("Standard Deviation: {} °C", std_dev);
-        defmt::info!("Peak-to-Peak Jitter: {} °C", std_dev * 6.0); // 6-sigma
+        defmt::info!("--- Benchmark Results ---");
+        defmt::info!("Samples: {}", samples.len());
+        defmt::info!("Mean: {} °C", mean as f32);
+        defmt::info!("Std Dev: {} °C", std_dev as f32);
+        defmt::info!("Peak-to-Peak Jitter: {} °C", (std_dev * 6.0) as f32); // 6-sigma
         
         if std_dev < 0.05 {
-            defmt::info!("PRECISION CLAIM VERIFIED: <0.05°C");
+            defmt::info!("SUCCESS: Standard deviation is < 0.05°C. Claim verified.");
         } else {
-            defmt::warn!("Precision below target. Check hardware noise.");
+            defmt::warn!("FAILURE: Standard deviation is {}°C. Check hardware connection.", std_dev as f32);
         }
-    }
-
-    /// Simple Newton-Raphson sqrt for benchmark (not for production)
-    fn sqrt_f32(val: f32) -> f32 {
-        let mut x = val;
-        let mut y = 1.0;
-        let e = 0.00001;
-        while (x - y).abs() > e {
-            x = (x + y) / 2.0;
-            y = val / x;
-        }
-        x
     }
 
     #[idle]
     fn idle(_: idle::Context) -> ! {
-        loop { core::hint::spin_loop(); }
+        loop {
+            cortex_m::asm::wfi();
+        }
     }
 }

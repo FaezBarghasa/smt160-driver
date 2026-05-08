@@ -10,7 +10,7 @@ use core::marker::PhantomData;
 /// Zero-sized marker struct representing an uninitialized SMT160 driver.
 ///
 /// In this state, the driver has no ownership of hardware peripherals and 
-/// cannot perform any measurements.
+/// cannot perform any measurements. This is the starting point for the driver lifecycle.
 pub struct Uninitialized;
 
 /// Zero-sized marker struct representing a fully initialized and validated SMT160 driver.
@@ -25,17 +25,26 @@ pub struct Ready;
 /// 
 /// # Typestate Benefits:
 /// - **Zero-Cost:** State transitions are checked at compile time and have no runtime overhead.
-/// - **Safety:** Methods like `read_temperature()` are only implemented for `Smt160<Ready>`.
-pub struct Smt160<State> {
-    _state: PhantomData<State>,
-    // Hardware peripheral ownership will be added in Phase 3/4
+/// - **Safety:** Methods like `poll_dma()` are only implemented for `Smt160<Ready>`, 
+///   making it physically impossible to access uninitialized hardware in safe Rust.
+pub struct Smt160<State, TIM, DMA> {
+    pub(crate) _state: PhantomData<State>,
+    pub(crate) timer: TIM,
+    pub(crate) dma: DMA,
+    // Additional fields will be added in Phase 4
 }
 
-impl Smt160<Uninitialized> {
+impl<TIM, DMA> Smt160<Uninitialized, TIM, DMA> {
     /// Creates a new, uninitialized instance of the SMT160 driver.
-    pub const fn new() -> Self {
+    /// 
+    /// This method does not touch hardware; it merely takes ownership of the 
+    /// peripherals to be configured later during the `init()` transition.
+    pub const fn new(timer: TIM, dma: DMA) -> Self {
         Self {
             _state: PhantomData,
+            timer,
+            dma,
         }
     }
 }
+

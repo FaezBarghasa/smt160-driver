@@ -10,19 +10,21 @@ use core::fmt;
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Smt160Error {
     /// The system clock or timer clock is below the 8MHz minimum required 
-    /// to achieve the 0.05°C precision target.
+    /// to achieve the 0.05°C precision target. High-speed signals require 
+    /// high-resolution timers.
     ClockTooSlow,
     
     /// The provided DMA buffer or slice is of an invalid size or alignment.
     /// This prevents memory corruption during high-speed burst transfers.
     InvalidBuffer,
     
-    /// The sensor failed to pulse within the expected 5ms window.
-    /// This usually indicates a disconnected sensor or a hardware ESD freeze.
+    /// The sensor failed to pulse within the expected 5ms window (sensor max period is ~1ms).
+    /// This usually indicates a disconnected sensor, a broken wire, or a hardware ESD freeze.
     SensorTimeout,
     
     /// The calculated temperature or duty cycle is physically impossible 
-    /// (e.g., outside the -45°C to +130°C range).
+    /// (e.g., outside the -45°C to +130°C range). This can also occur 
+    /// if the signal is extremely noisy (jitter exceeding correction limits).
     OutOfBounds,
 }
 
@@ -36,6 +38,3 @@ impl fmt::Display for Smt160Error {
         }
     }
 }
-
-// In a no_std environment, we often implement the Error trait if available via core
-// but since we are targeting Cortex-M, fmt::Display is usually sufficient for logging.
