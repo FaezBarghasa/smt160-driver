@@ -1,66 +1,41 @@
-//! Unified Error Handling for the SMT160 Driver.
-//!
-//! This module defines the `Smt160Error` enum, which aggregates all possible 
-//! failure modes from hardware capture to mathematical processing.
+//! Error and Status enumerations for the SMT160 driver.
 
 use core::fmt;
 
-/// All potential failures of the SMT160 processing pipeline.
-/// 
-/// This enum provides a unified error type for hardware capture, 
-/// signal decoding, and configuration management.
+/// All possible error conditions for the SMT160 driver.
 ///
-/// # Usage Example
-/// ```
-/// use smt160_driver::Smt160Error;
-/// let err = Smt160Error::Timeout;
-/// println!("Error: {}", err);
-/// ```
+/// This enum is designed to be compatible with `defmt` for efficient, 
+/// deferred logging in industrial environments where jitter must be minimized.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Smt160Error {
-    /// The sensor signal timed out (no edges detected within the required window).
-    Timeout,
-    /// The calculated duty cycle is outside the physical bounds of the sensor (0.320-0.980).
-    InvalidDutyCycle,
-    /// The PWM frequency is outside the specified 1kHz-4kHz operating range.
-    FrequencyOutOfRange,
-    /// The calculated temperature is outside the sensor's industrial operating range (-45°C to 130°C).
-    ThermalOverload,
-    /// The edge sequence (Rise -> Fall -> Rise) was violated or inconsistent.
-    SequenceViolation,
-    /// The signal jitter exceeds the safety threshold for high-accuracy sensing.
-    HighJitter,
-    /// An error occurred during I2C telemetry communication.
-    I2cError,
-    /// The provided configuration is invalid or inconsistent.
-    InvalidConfiguration,
-    /// The incoming raw signal is mathematically invalid (e.g., division by zero).
-    InvalidSignal,
+    /// The system clock or timer clock is below the 8MHz minimum required 
+    /// to achieve the 0.05°C precision target.
+    ClockTooSlow,
+    
+    /// The provided DMA buffer or slice is of an invalid size or alignment.
+    /// This prevents memory corruption during high-speed burst transfers.
+    InvalidBuffer,
+    
+    /// The sensor failed to pulse within the expected 5ms window.
+    /// This usually indicates a disconnected sensor or a hardware ESD freeze.
+    SensorTimeout,
+    
+    /// The calculated temperature or duty cycle is physically impossible 
+    /// (e.g., outside the -45°C to +130°C range).
+    OutOfBounds,
 }
 
 impl fmt::Display for Smt160Error {
-    /// Formats the error for human-readable display.
-    /// 
-    /// # Errors
-    /// This function only fails if the underlying formatter fails.
-    ///
-    /// # Panics
-    /// This function does not panic.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Timeout => write!(f, "Sensor Signal Timeout"),
-            Self::InvalidDutyCycle => write!(f, "Invalid Duty Cycle Detected"),
-            Self::FrequencyOutOfRange => write!(f, "PWM Frequency Out of Operational Range"),
-            Self::ThermalOverload => write!(f, "Thermal Overload: Temperature Out of Bounds"),
-            Self::SequenceViolation => write!(f, "Signal Sequence Violation"),
-            Self::HighJitter => write!(f, "Signal Jitter Exceeds Safety Threshold"),
-            Self::I2cError => write!(f, "I2C Telemetry Communication Error"),
-            Self::InvalidConfiguration => write!(f, "Invalid Driver Configuration"),
-            Self::InvalidSignal => write!(f, "Mathematically Invalid Signal Capture"),
+            Self::ClockTooSlow => write!(f, "Clock frequency insufficient for 0.05°C precision"),
+            Self::InvalidBuffer => write!(f, "Invalid DMA buffer configuration"),
+            Self::SensorTimeout => write!(f, "Sensor pulse timeout (disconnected or ESD freeze)"),
+            Self::OutOfBounds => write!(f, "Measurement out of physical sensor bounds"),
         }
     }
 }
 
-
-
+// In a no_std environment, we often implement the Error trait if available via core
+// but since we are targeting Cortex-M, fmt::Display is usually sufficient for logging.

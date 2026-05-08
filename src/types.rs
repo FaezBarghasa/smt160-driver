@@ -1,95 +1,41 @@
-//! Core Data Types for the SMT160 Sensor.
+//! Typestate definitions for the SMT160 driver.
 //!
-//! This module defines the essential structures and bitfields used for 
-//! representing sensor readings, operational status, and health metrics.
+//! This module implements the Typestate pattern to enforce hardware safety at compile time.
+//! By encoding the device state into the Rust type system, we prevent the user from
+//! attempting to read from the sensor before the hardware peripherals (Timers, DMA, Clocks)
+//! have been properly initialized and validated.
 
-use bitflags::bitflags;
-use fixed::types::I16F16;
+use core::marker::PhantomData;
 
-bitflags! {
-    /// Diagnostic operational status of the SMT160 sensor.
-    /// 
-    /// This bitfield allows for multiple simultaneous warnings or errors 
-    /// to be reported in a single telemetry frame.
-    ///
-    /// # Usage Example
-    /// ```
-    /// use smt160_driver::Smt160Status;
-    /// let status = Smt160Status::OK;
-    /// if status.contains(Smt160Status::FREQUENCY_ERROR) {
-    ///     // Handle error
-    /// }
-    /// ```
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub struct Smt160Status: u8 {
-        /// Sensor is operating within all nominal parameters.
-        const OK = 0b0000_0000;
-        /// No edges detected for a significant period (Signal Loss).
-        const SIGNAL_LOSS = 0b0000_0001;
-        /// PWM frequency is outside the 1kHz-4kHz industrial range.
-        const FREQUENCY_ERROR = 0b0000_0010;
-        /// Duty cycle is outside the physical 0.320-0.980 bounds.
-        const BOUNDARY_VIOLATION = 0b0000_0100;
-        /// High jitter detected in the incoming pulse train.
-        const JITTER_ALERT = 0b0000_1000;
-        /// Temperature reading is out of the specified operating range (-45°C to 130°C).
-        const OUT_OF_BOUNDS = 0b0001_0000;
+/// Zero-sized marker struct representing an uninitialized SMT160 driver.
+///
+/// In this state, the driver has no ownership of hardware peripherals and 
+/// cannot perform any measurements.
+pub struct Uninitialized;
+
+/// Zero-sized marker struct representing a fully initialized and validated SMT160 driver.
+///
+/// Transitions to this state only occur after the clock frequency has been verified 
+/// to meet the 0.05°C precision requirements and the DMA/Timer subsystems are active.
+pub struct Ready;
+
+/// The main SMT160 driver structure.
+///
+/// The `State` parameter is used to track the initialization status of the hardware.
+/// 
+/// # Typestate Benefits:
+/// - **Zero-Cost:** State transitions are checked at compile time and have no runtime overhead.
+/// - **Safety:** Methods like `read_temperature()` are only implemented for `Smt160<Ready>`.
+pub struct Smt160<State> {
+    _state: PhantomData<State>,
+    // Hardware peripheral ownership will be added in Phase 3/4
+}
+
+impl Smt160<Uninitialized> {
+    /// Creates a new, uninitialized instance of the SMT160 driver.
+    pub const fn new() -> Self {
+        Self {
+            _state: PhantomData,
+        }
     }
 }
-
-#[cfg(feature = "defmt")]
-impl defmt::Format for Smt160Status {
-    /// Formats the status for `defmt` logging.
-    fn format(&self, fmt: defmt::Formatter) {
-        defmt::write!(fmt, "Smt160Status({:b})", self.bits());
-    }
-}
-
-/// A high-precision temperature reading with associated diagnostic metadata.
-///
-/// # Usage Example
-/// ```
-/// use smt160_driver::Reading;
-/// use fixed::types::I16F16;
-/// use smt160_driver::Smt160Status;
-///
-/// let reading = Reading {
-///     temperature_celsius: I16F16::from_num(25.5),
-///     status: Smt160Status::OK,
-/// };
-/// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct Reading {
-    /// The temperature value in degrees Celsius (°C), represented as a 16.16 fixed-point number.
-    pub temperature_celsius: I16F16,
-    /// The operational status of the sensor at the exact time of the reading.
-    pub status: Smt160Status,
-}
-
-/// Advanced diagnostic health metrics for industrial deployments.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct IndustrialHealth {
-    /// Total valid samples processed since initialization.
-    pub total_samples: u64,
-    /// Number of signal loss events detected (self-healing triggers).
-    pub signal_loss_count: u32,
-    /// Number of DMA transfer errors or buffer overruns.
-    pub hardware_fault_count: u32,
-    /// Current signal jitter in timer ticks (Industrial limit: <50 ticks).
-    pub jitter_ticks: u32,
-}
-
-/// Real-time performance statistics for system integration validation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct ProcessingStats {
-    /// CPU cycles spent in the last processing batch.
-    pub cycles_last_batch: u32,
-    /// Maximum CPU cycles recorded in any batch.
-    pub cycles_max_observed: u32,
-    /// Percentage of CPU utilization (multiplied by 100 for fixed-point).
-    pub cpu_load_scaled: u32,
-}
-
