@@ -1,3 +1,4 @@
+#![cfg(feature = "stm32f1")]
 //! Production-Grade STM32F1 Managed DMA Driver for SMT160.
 //!
 //! # Safety
@@ -7,7 +8,7 @@
 
 use crate::Smt160Error;
 use stm32f1xx_hal::pac::{TIM2, DMA1};
-use core::sync::atomic::{AtomicBool, Ordering};
+use stm32f1xx_hal::dma::dma1::C7;
 
 /// Size of the circular DMA capture buffer.
 pub const DMA_BUFFER_SIZE: usize = 64;
@@ -15,7 +16,7 @@ pub const DMA_BUFFER_SIZE: usize = 64;
 /// Managed Hardware Abstraction for SMT160 on STM32F103.
 pub struct Smt160Dma {
     timer: TIM2,
-    dma_channel: stm32f1xx_hal::dma::C7,
+    dma_channel: C7,
     buffer: &'static mut [u32; DMA_BUFFER_SIZE],
 }
 
@@ -31,7 +32,7 @@ impl Smt160Dma {
     /// is insufficient for the $0.05^\circ\text{C}$ accuracy target.
     pub fn new(
         timer: TIM2, 
-        dma_channel: stm32f1xx_hal::dma::C7, 
+        dma_channel: C7, 
         pclk_mhz: u32,
         buffer: &'static mut [u32; DMA_BUFFER_SIZE]
     ) -> Result<Self, Smt160Error> {
@@ -76,11 +77,11 @@ impl Smt160Dma {
         // Source: TIM2_DMAR, Destination: buffer
         // Note: We use the PAC directly here for maximum performance and direct control
         let dma1 = unsafe { &*DMA1::ptr() };
-        dma1.ch7.cpadr().write(|w| unsafe { w.bits(timer.dmar().as_ptr() as u32) });
-        dma1.ch7.cmar().write(|w| unsafe { w.bits(buffer.as_ptr() as u32) });
-        dma1.ch7.cndtr().write(|w| unsafe { w.bits(DMA_BUFFER_SIZE as u32) });
+        dma1.ch7().par().write(|w| unsafe { w.bits(timer.dmar().as_ptr() as u32) });
+        dma1.ch7().mar().write(|w| unsafe { w.bits(buffer.as_ptr() as u32) });
+        dma1.ch7().ndtr().write(|w| unsafe { w.bits(DMA_BUFFER_SIZE as u32) });
 
-        dma1.ch7.ccr().modify(|_, w| unsafe {
+        dma1.ch7().cr().modify(|_, w| unsafe {
             w.pl().bits(0b10)    // High priority
              .msize().bits(0b10) // 32-bit memory
              .psize().bits(0b10) // 32-bit peripheral

@@ -1,3 +1,4 @@
+#![cfg(feature = "stm32f1")]
 //! STM32F1xx Implementation of the SMT160 Capture Engine.
 
 use crate::platform::CaptureDevice;

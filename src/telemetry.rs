@@ -2,7 +2,7 @@
 
 #![cfg(feature = "telemetry")]
 
-use crate::{Reading, Smt160Health};
+use crate::{Reading, IndustrialHealth};
 use core::fmt::Write;
 use usbd_serial::SerialPort;
 use usb_device::bus::UsbBus;
@@ -34,7 +34,7 @@ impl<'a, B: UsbBus> TelemetryStreamer<'a, B> {
     /// ```
     /// streamer.stream_frame(current_reading, health_metrics);
     /// ```
-    pub fn stream_frame(&mut self, reading: Reading, health: Smt160Health) {
+    pub fn stream_frame(&mut self, reading: Reading, health: IndustrialHealth) {
         let mut string_buffer = [0u8; 128];
         let mut buffer_wrapper = StringBufferWrapper { 
             buffer: &mut string_buffer, 
@@ -43,11 +43,11 @@ impl<'a, B: UsbBus> TelemetryStreamer<'a, B> {
         
         let _ = write!(
             buffer_wrapper, 
-            "TEMP:{:.4},STATUS:{:?},JITTER:{},FREQ_DRIFT:{}\r\n", 
+            "TEMP:{:.4},STATUS:{:?},JITTER:{},FAULTS:{}\r\n", 
             reading.temperature_celsius.to_num::<f32>(), 
             reading.status,
-            health.jitter_rms_ticks,
-            health.frequency_drift_hz
+            health.jitter_ticks,
+            health.hardware_fault_count
         );
         
         let valid_length = buffer_wrapper.offset;
