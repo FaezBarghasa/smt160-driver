@@ -43,7 +43,7 @@ mod app {
             &mut flash.acr,
         );
 
-        let mut gpioa = cx.device.GPIOA.split(&mut rcc.apb2);
+        let mut gpioa = cx.device.GPIOA.split(&mut rcc);
         let _pa0 = gpioa.pa0.into_floating_input(&mut gpioa.crl);
 
         let tim2 = cx.device.TIM2;
@@ -67,7 +67,7 @@ mod app {
         (
             Shared { current_temp: None },
             Local {
-                decoder: Smt160Decoder::from_clocks(&rcc.clocks),
+                decoder: Smt160Decoder::new_standalone(72), // 72MHz System Clock
                 tim2,
                 overflows: 0,
                 monotonic_base: 0,
@@ -103,7 +103,7 @@ mod app {
             let _ = cx.local.decoder.push_edge(false, base + high_ticks);
             match cx.local.decoder.push_edge(true, base + period_ticks) {
                 Ok(Some(reading)) => {
-                    cx.shared.current_temp.lock(|t| *t = Some(reading.value));
+                    cx.shared.current_temp.lock(|t| *t = Some(reading.temperature_celsius));
                 }
                 _ => {}
             }

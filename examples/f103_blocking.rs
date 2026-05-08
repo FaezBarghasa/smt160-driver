@@ -19,7 +19,7 @@
 
 use defmt_rtt as _;
 use panic_probe as _;
-use smt160_driver::driver_blocking::Smt160Blocking;
+use smt160_driver::driver_blocking::Smt160BlockingDriver;
 use stm32f1xx_hal::{
     pac,
     prelude::*,
@@ -58,8 +58,8 @@ fn main() -> ! {
     };
 
     use smt160_driver::decoder::Smt160Decoder;
-    let decoder = Smt160Decoder::with_clock(72);
-    let mut smt160 = Smt160Blocking::new(sensor_pin, get_ticks, decoder);
+    let decoder = Smt160Decoder::new_standalone(72);
+    let mut smt160 = Smt160BlockingDriver::new(sensor_pin, get_ticks, decoder);
 
     info!("SMT160 Blocking Driver Example Started");
 
@@ -68,9 +68,9 @@ fn main() -> ! {
         // match smt160.read_temperature_precision() {
         
         // Option 2: Standard reading with timeout (36M ticks = 500ms)
-        match smt160.read_temperature(36_000_000) {
+        match smt160.read_temperature_with_timeout(36_000_000) {
             Ok(reading) => {
-                info!("Temperature: {} C, Status: {:?}", reading.value.to_num::<f32>(), reading.status);
+                info!("Temperature: {} C, Status: {:?}", reading.temperature_celsius.to_num::<f32>(), reading.status);
             }
             Err(e) => {
                 error!("Driver Error: {}", e);

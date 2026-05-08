@@ -13,7 +13,18 @@ use stm32f1xx_hal::pac::TIM2;
 /// Incremented in the Timer Update ISR.
 static OVERFLOW_COUNT: AtomicU32 = AtomicU32::new(0);
 
-/// Hardware-accelerated capture driver for SMT160.
+/// Hardware-accelerated capture driver for SMT160 on STM32F1.
+///
+/// # Architecture
+/// This implementation uses the "PWM Input" mode of the STM32 timers, where 
+/// CCR1 captures the Period and CCR2 captures the High Time. This is 
+/// performed in hardware, eliminating interrupt latency jitter.
+///
+/// # Usage Example
+/// ```
+/// use smt160_driver::stm32f1::Smt160Capture;
+/// let capture = Smt160Capture::new_tim2(dp.TIM2, decoder);
+/// ```
 pub struct Smt160Capture<TIM> {
     tim: TIM,
     decoder: Smt160Decoder,
@@ -86,7 +97,7 @@ impl Smt160Capture<TIM2> {
         // T0 (Rise) = 0
         // T1 (Fall) = high_ticks
         // T2 (Rise) = period_ticks
-        self.decoder.reset();
+        self.decoder.reset_state();
         self.decoder.push_edge(true, 0)?;
         self.decoder.push_edge(false, high_ticks)?;
         self.decoder.push_edge(true, period_ticks)

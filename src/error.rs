@@ -1,4 +1,7 @@
 //! Unified Error Handling for the SMT160 Driver.
+//!
+//! This module defines the `Smt160Error` enum, which aggregates all possible 
+//! failure modes from hardware capture to mathematical processing.
 
 use core::fmt;
 
@@ -6,16 +9,23 @@ use core::fmt;
 /// 
 /// This enum provides a unified error type for hardware capture, 
 /// signal decoding, and configuration management.
+///
+/// # Usage Example
+/// ```
+/// use smt160_driver::Smt160Error;
+/// let err = Smt160Error::Timeout;
+/// println!("Error: {}", err);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Smt160Error {
     /// The sensor signal timed out (no edges detected within the required window).
     Timeout,
-    /// The calculated duty cycle is outside the physical bounds of the sensor.
+    /// The calculated duty cycle is outside the physical bounds of the sensor (0.320-0.980).
     InvalidDutyCycle,
     /// The PWM frequency is outside the specified 1kHz-4kHz operating range.
     FrequencyOutOfRange,
-    /// The calculated temperature is outside the sensor's industrial operating range.
+    /// The calculated temperature is outside the sensor's industrial operating range (-45°C to 130°C).
     ThermalOverload,
     /// The edge sequence (Rise -> Fall -> Rise) was violated or inconsistent.
     SequenceViolation,
@@ -34,6 +44,9 @@ impl fmt::Display for Smt160Error {
     /// 
     /// # Errors
     /// This function only fails if the underlying formatter fails.
+    ///
+    /// # Panics
+    /// This function does not panic.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Timeout => write!(f, "Sensor Signal Timeout"),
@@ -48,5 +61,6 @@ impl fmt::Display for Smt160Error {
         }
     }
 }
+
 
 

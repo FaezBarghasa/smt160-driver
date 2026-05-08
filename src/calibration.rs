@@ -1,10 +1,23 @@
 //! Storage-Agnostic Calibration and Persistence Management.
+//!
+//! This module provides the infrastructure for piecewise linear calibration 
+//! and persistence of sensor-specific correction factors.
 
 use fixed::types::{I16F16, I32F32};
 use embedded_storage::{ReadStorage, Storage};
 use crate::Smt160Error;
 
 /// A single calibration point mapping Duty Cycle to a known Reference Temperature.
+///
+/// # Usage Example
+/// ```
+/// use smt160_driver::calibration::CalibrationPoint;
+/// use fixed::types::{I16F16, I32F32};
+/// let point = CalibrationPoint {
+///     duty_cycle: I32F32::from_num(0.4375),
+///     reference_temperature: I16F16::from_num(25.0),
+/// };
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct CalibrationPoint {
@@ -20,6 +33,13 @@ pub struct CalibrationPoint {
 /// This engine allows for non-linear correction across the sensor's range by 
 /// defining up to 5 calibration segments. It uses piecewise linear interpolation 
 /// to derive the final temperature reading.
+///
+/// # Usage Example
+/// ```
+/// use smt160_driver::calibration::CalibrationProfile;
+/// let profile = CalibrationProfile::default();
+/// let temp = profile.interpolate_temperature(I32F32::from_num(0.5));
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct CalibrationProfile {
@@ -31,6 +51,9 @@ pub struct CalibrationProfile {
 
 impl Default for CalibrationProfile {
     /// Provides a default profile based on standard SMT160 characteristics.
+    ///
+    /// # Panics
+    /// This function does not panic.
     fn default() -> Self {
         let mut points = [CalibrationPoint::default(); 5];
         points[0] = CalibrationPoint { duty_cycle: I32F32::from_num(0.32), reference_temperature: I16F16::ZERO };
@@ -50,6 +73,9 @@ impl CalibrationProfile {
     /// # Summary
     /// Derives the corrected temperature by finding the appropriate segment 
     /// in the calibration profile.
+    ///
+    /// # Panics
+    /// This function does not panic.
     pub fn interpolate_temperature(&self, measured_duty_cycle: I32F32) -> I16F16 {
         if self.active_points_count == 0 {
             return I16F16::ZERO;
@@ -89,6 +115,13 @@ impl CalibrationProfile {
 /// 
 /// # Type Parameters
 /// - `S`: Any backend implementing `Storage` and `ReadStorage` (e.g., Flash, EEPROM).
+///
+/// # Usage Example
+/// ```
+/// use smt160_driver::calibration::CalibrationManager;
+/// let mut manager = CalibrationManager::new(flash_storage, 0x0800_C000);
+/// manager.load_profile().unwrap();
+/// ```
 pub struct CalibrationManager<S> {
     storage_backend: S,
     /// The active calibration profile.
@@ -101,6 +134,9 @@ where
     S: Storage + ReadStorage,
 {
     /// Creates a new calibration manager with a specific storage backend.
+    ///
+    /// # Panics
+    /// This function does not panic.
     pub fn new(storage_backend: S, memory_offset: u32) -> Self {
         Self {
             storage_backend,
@@ -131,3 +167,4 @@ where
         Ok(())
     }
 }
+

@@ -1,4 +1,7 @@
 //! Core Data Types for the SMT160 Sensor.
+//!
+//! This module defines the essential structures and bitfields used for 
+//! representing sensor readings, operational status, and health metrics.
 
 use bitflags::bitflags;
 use fixed::types::I16F16;
@@ -8,6 +11,15 @@ bitflags! {
     /// 
     /// This bitfield allows for multiple simultaneous warnings or errors 
     /// to be reported in a single telemetry frame.
+    ///
+    /// # Usage Example
+    /// ```
+    /// use smt160_driver::Smt160Status;
+    /// let status = Smt160Status::OK;
+    /// if status.contains(Smt160Status::FREQUENCY_ERROR) {
+    ///     // Handle error
+    /// }
+    /// ```
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct Smt160Status: u8 {
         /// Sensor is operating within all nominal parameters.
@@ -27,12 +39,25 @@ bitflags! {
 
 #[cfg(feature = "defmt")]
 impl defmt::Format for Smt160Status {
+    /// Formats the status for `defmt` logging.
     fn format(&self, fmt: defmt::Formatter) {
         defmt::write!(fmt, "Smt160Status({:b})", self.bits());
     }
 }
 
 /// A high-precision temperature reading with associated diagnostic metadata.
+///
+/// # Usage Example
+/// ```
+/// use smt160_driver::Reading;
+/// use fixed::types::I16F16;
+/// use smt160_driver::Smt160Status;
+///
+/// let reading = Reading {
+///     temperature_celsius: I16F16::from_num(25.5),
+///     status: Smt160Status::OK,
+/// };
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct Reading {
@@ -43,6 +68,13 @@ pub struct Reading {
 }
 
 /// Health metrics and diagnostic telemetry for the SMT160 sensor subsystem.
+///
+/// # Usage Example
+/// ```
+/// use smt160_driver::Smt160Health;
+/// let health = Smt160Health::default();
+/// println!("Total Samples: {}", health.total_samples_count);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct Smt160Health {
@@ -55,3 +87,4 @@ pub struct Smt160Health {
     /// The total number of processing or hardware errors encountered.
     pub error_total_count: u32,
 }
+

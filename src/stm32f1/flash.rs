@@ -10,15 +10,24 @@ use critical_section;
 /// This implementation targets a fixed 1KB page at the end of the 64KB Flash 
 /// memory space (Page 63). All write operations are protected by `critical-section` 
 /// to ensure atomicity and prevent Bus Faults.
+///
+/// # Usage Example
+/// ```
+/// use smt160_driver::stm32f1::Smt160FlashBackend;
+/// let mut storage = Smt160FlashBackend::new(&mut dp.FLASH);
+/// ```
 pub struct Smt160FlashBackend<'a> {
     flash_peripheral: &'a mut FLASH,
 }
 
 impl<'a> Smt160FlashBackend<'a> {
-    /// The starting memory address of the dedicated calibration Flash page.
+    /// The starting memory address of the dedicated calibration Flash page (Page 63).
     pub const CALIBRATION_PAGE_START_ADDRESS: u32 = 0x0800_FC00;
 
-    /// Creates a new Flash storage backend.
+    /// Creates a new Flash storage backend with the provided peripheral.
+    ///
+    /// # Panics
+    /// This function does not panic.
     pub fn new(flash_peripheral: &'a mut FLASH) -> Self {
         Self { flash_peripheral }
     }

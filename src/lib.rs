@@ -31,6 +31,15 @@ pub use types::{Reading, Smt160Status, Smt160Health};
 /// This driver uses a decoupled architecture where:
 /// - **Configuration (`C`)**: Provides sensor calibration constants.
 /// - **Capture Hardware (`CAP`)**: Abstracts the physical timer/capture peripheral.
+///
+/// # Usage Example
+/// ```
+/// use smt160_driver::Smt160Driver;
+/// use smt160_driver::config::StaticConfiguration;
+///
+/// // Create a driver with static configuration and mock capture
+/// let mut sensor = Smt160Driver::new(StaticConfiguration, mock_capture, 72);
+/// ```
 pub struct Smt160Driver<C, CAP> {
     /// The configuration provider for this driver.
     pub configuration: C,
@@ -51,12 +60,16 @@ where
     /// 
     /// # Summary
     /// Initializes the driver with a specific configuration, hardware capture device, 
-    /// and the expected timer clock frequency.
+    /// and the expected timer clock frequency in Megahertz.
     /// 
     /// # Usage Example
     /// ```
-    /// let driver = Smt160Driver::new(StaticConfig, mock_capture, 72);
+    /// use smt160_driver::Smt160Driver;
+    /// let driver = Smt160Driver::new(config, capture, 72);
     /// ```
+    ///
+    /// # Panics
+    /// This function does not panic.
     pub fn new(configuration: C, capture_device: CAP, timer_clock_megahertz: u32) -> Self {
         Self {
             configuration,
@@ -67,12 +80,19 @@ where
     }
 
     /// Retrieves the latest diagnostic health metrics from the sensor subsystem.
+    ///
+    /// # Panics
+    /// This function does not panic.
     pub fn get_diagnostic_health(&self) -> Smt160Health {
         self.health_monitor
     }
 
     /// Performs a high-precision asynchronous temperature reading.
     /// 
+    /// # Summary
+    /// Waits for new capture data from the hardware and processes it through the 
+    /// internal decoding engine.
+    ///
     /// # Errors
     /// Returns `Smt160Error` if the signal is lost, frequency is out of range, 
     /// or if the duty cycle violates physical sensor boundaries.
@@ -89,3 +109,4 @@ where
         )
     }
 }
+

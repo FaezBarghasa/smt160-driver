@@ -1,8 +1,11 @@
 //! High-Precision SMT160 Signal Logic Engine.
+//!
+//! This module implements the core state machine and processing logic for 
+//! decoding PWM signals into temperature readings.
 
 use crate::config::*;
 use crate::{Reading, Smt160Status, Smt160Error};
-use crate::math::apply_ewma_filter;
+use crate::math::{apply_shift_ema_filter, apply_linearity_correction, calculate_frequency_hz, calculate_duty_cycle, calculate_temperature_celsius};
 use fixed::types::{I16F16, I32F32};
 
 /// A high-integrity state machine for decoding SMT160 pulse trains with deterministic performance.
@@ -11,6 +14,15 @@ use fixed::types::{I16F16, I32F32};
 /// This decoder is entirely passive and platform-agnostic. It accepts raw timer timestamps 
 /// or ticks and performs all calculations using fixed-point arithmetic to ensure consistency 
 /// across systems without an FPU.
+///
+/// # Usage Example
+/// ```
+/// use smt160_driver::decoder::Smt160Decoder;
+/// use fixed::types::I32F32;
+///
+/// let mut decoder = Smt160Decoder::new_standalone(72);
+/// let reading = decoder.push_edge(true, 1000); // Uses standard constants
+/// ```
 pub struct Smt160Decoder {
     last_rising_edge_ticks: Option<u64>,
     last_falling_edge_ticks: Option<u64>,
@@ -25,6 +37,7 @@ pub struct Smt160Decoder {
 
 
 impl Default for Smt160Decoder {
+    /// Provides a default decoder with 1MHz clock resolution.
     fn default() -> Self {
         Self::new()
     }
@@ -32,6 +45,9 @@ impl Default for Smt160Decoder {
 
 impl Smt160Decoder {
     /// Creates a new decoder instance with a default 1MHz (microsecond) clock resolution.
+    ///
+    /// # Panics
+    /// This function does not panic.
     pub const fn new() -> Self {
         Self {
             last_rising_edge_ticks: None,
@@ -47,6 +63,9 @@ impl Smt160Decoder {
     }
 
     /// Creates a new decoder instance optimized for a specific hardware timer frequency.
+    ///
+    /// # Panics
+    /// This function does not panic.
     pub const fn new_standalone(timer_clock_megahertz: u32) -> Self {
         let mut decoder = Self::new();
         decoder.timer_clock_megahertz = if timer_clock_megahertz > 0 { timer_clock_megahertz } else { 1 };
@@ -54,6 +73,9 @@ impl Smt160Decoder {
     }
 
     /// Resets all internal state, including filters and edge tracking.
+    ///
+    /// # Panics
+    /// This function does not panic.
     pub fn reset_state(&mut self) {
         self.last_rising_edge_ticks = None;
         self.last_falling_edge_ticks = None;
@@ -68,6 +90,9 @@ impl Smt160Decoder {
     /// 
     /// # Summary
     /// Iterates through the batch and returns the latest filtered reading.
+    ///
+    /// # Errors
+    /// Returns `Smt160Error` if any sample in the batch is malformed or violates safety bounds.
     pub fn process_batch(
         &mut self, 
         dma_capture_data: &[u32], 
@@ -94,6 +119,9 @@ impl Smt160Decoder {
     /// # Summary
     /// This is the core logic engine that validates signal integrity and calculates 
     /// the filtered temperature reading.
+    ///
+    /// # Errors
+    /// Returns `Smt160Error` if the signal violates frequency or boundary constraints.
     pub fn process_raw_ticks(
         &mut self, 
         period_ticks: u64, 
@@ -108,18 +136,14 @@ impl Smt160Decoder {
         }
 
         // Frequency validation (Industrial Range: 1kHz - 4kHz)
-        let frequency_hz = (self.timer_clock_megahertz as u64 * 1_000_000)
-            .checked_div(period_ticks)
-            .ok_or(Smt160Error::InvalidSignal)?;
+        let frequency_hz = calculate_frequency_hz(period_ticks, self.timer_clock_megahertz)?;
             
         if frequency_hz < MINIMUM_FREQUENCY_HZ as u64 || frequency_hz > MAXIMUM_FREQUENCY_HZ as u64 {
             operational_status |= Smt160Status::FREQUENCY_ERROR;
         }
 
         // High-precision duty cycle calculation (I32F32)
-        let current_duty_cycle = I32F32::from_num(active_ticks)
-            .checked_div(I32F32::from_num(period_ticks))
-            .ok_or(Smt160Error::InvalidSignal)?;
+        let current_duty_cycle = calculate_duty_cycle(active_ticks, period_ticks)?;
         
         // Physical boundary validation (SMT160 Specs: 0.320 to 0.980)
         if current_duty_cycle < I32F32::from_num(0.32) || current_duty_cycle > I32F32::from_num(0.98) {
@@ -127,31 +151,36 @@ impl Smt160Decoder {
         }
 
         // Temperature calculation: T = (DutyCycle - Offset) * InverseStep
-        let calculated_temperature_celsius = I16F16::from_num((current_duty_cycle - duty_cycle_offset) * inverse_step_constant);
+        let calculated_temperature_celsius = calculate_temperature_celsius(current_duty_cycle, duty_cycle_offset, inverse_step_constant);
 
         // Industrial thermal safety bounds check
         if calculated_temperature_celsius < MINIMUM_TEMPERATURE_CELSIUS || calculated_temperature_celsius > MAXIMUM_TEMPERATURE_CELSIUS {
             operational_status |= Smt160Status::OUT_OF_BOUNDS;
         }
 
-        // Adaptive EWMA Filtering Logic
+        // Apply Linearity Correction
+        let corrected_temperature = apply_linearity_correction(calculated_temperature_celsius);
+
+        // Adaptive Shift-Based EMA Filtering Logic
         let temperature_deviation = if let Some(previous_average) = self.exponential_moving_average {
-            (calculated_temperature_celsius - previous_average).abs()
+            (corrected_temperature - previous_average).abs()
         } else {
             I16F16::ZERO
         };
 
         // Increase response speed if high deviation detected (>5.0°C) or during startup
-        let smoothing_factor = if self.total_processed_samples < 16 || temperature_deviation > I16F16::from_num(5) {
-            I32F32::from_num(0.8) // Fast tracking
+        // shift of 0 -> 100% new value (bypass filter)
+        // shift of 7 -> 1/128th weighting (strong noise rejection)
+        let alpha_shift = if self.total_processed_samples < 16 || temperature_deviation > I16F16::from_num(5) {
+            0 // Fast tracking
         } else {
-            I32F32::from_num(0.1) // Noise rejection
+            7 // Strong noise rejection
         };
 
         let updated_average = if let Some(previous_average) = self.exponential_moving_average {
-            apply_ewma_filter(previous_average, calculated_temperature_celsius, smoothing_factor)
+            apply_shift_ema_filter(previous_average, corrected_temperature, alpha_shift)
         } else {
-            calculated_temperature_celsius
+            corrected_temperature // First reading bypasses filter
         };
         
         self.exponential_moving_average = Some(updated_average);
@@ -179,11 +208,35 @@ impl Smt160Decoder {
         })
     }
 
+    /// Pushes a new edge timestamp into the state machine using standard constants.
+    /// 
+    /// # Summary
+    /// Convenience wrapper around `push_edge_timestamp` that uses the default 
+    /// SMT160 transfer function parameters.
+    ///
+    /// # Errors
+    /// Returns `Smt160Error` if the signal timing violates physical constraints.
+    pub fn push_edge(
+        &mut self, 
+        is_rising_edge: bool, 
+        capture_timestamp_ticks: u64
+    ) -> Result<Option<Reading>, Smt160Error> {
+        self.push_edge_timestamp(
+            is_rising_edge, 
+            capture_timestamp_ticks, 
+            crate::config::DUTY_CYCLE_OFFSET, 
+            crate::config::INVERSE_STEP_CONSTANT
+        )
+    }
+
     /// Pushes a new edge timestamp into the state machine.
     /// 
     /// # Summary
     /// Automatically manages Rising/Falling edge logic and returns a filtered reading 
     /// when a complete PWM cycle has been captured.
+    ///
+    /// # Errors
+    /// Returns `Smt160Error` if the signal timing violates physical constraints.
     pub fn push_edge_timestamp(
         &mut self, 
         is_rising_edge: bool, 
@@ -217,6 +270,7 @@ impl Smt160Decoder {
         }
     }
 
+    /// Calculates the average value of the internal circular buffer.
     fn calculate_buffer_average(&self) -> I16F16 {
         let sample_count = if self.is_buffer_full { 16 } else { self.buffer_index };
         if sample_count == 0 {
@@ -229,3 +283,4 @@ impl Smt160Decoder {
         I16F16::from_num(total_sum.checked_div(I32F32::from_num(sample_count)).unwrap_or(I32F32::ZERO))
     }
 }
+

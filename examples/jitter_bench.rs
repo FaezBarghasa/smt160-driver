@@ -40,7 +40,7 @@ mod app {
         let mut gpioa = cx.device.GPIOA.split(&mut clocks);
         let _pa0 = gpioa.pa0.into_floating_input(&mut gpioa.crl);
 
-        let decoder = Smt160Decoder::from_clocks(&clocks.clocks);
+        let decoder = Smt160Decoder::new_standalone(72);
         let capture = Smt160Capture::new_tim2(cx.device.TIM2, decoder);
 
         defmt::info!("SMT160 Jitter Bench Started (72MHz)");
@@ -76,14 +76,14 @@ mod app {
             if let Ok(Some(reading)) = cx.local.capture.handle_capture_isr() {
                 *cx.local.count += 1;
                 
-                let val_bits = reading.value.to_bits();
+                let val_bits = reading.temperature_celsius.to_bits();
                 if val_bits < *cx.local.min_dc { *cx.local.min_dc = val_bits; }
                 if val_bits > *cx.local.max_dc { *cx.local.max_dc = val_bits; }
 
                 if *cx.local.count % 100 == 0 {
                     let range = *cx.local.max_dc - *cx.local.min_dc;
                     defmt::info!("Samples: {} | Temp: {} | Range: {} bits", 
-                        *cx.local.count, reading.value, range);
+                        *cx.local.count, reading.temperature_celsius, range);
                     
                     // Reset stats for next window
                     *cx.local.min_dc = i32::MAX;
