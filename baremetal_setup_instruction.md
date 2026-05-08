@@ -1,128 +1,101 @@
 # 🏗️ Baremetal Setup Instructions for SMT160-Driver
 
-This guide provides instructions for integrating the `smt160-driver` into a baremetal Rust project, typically targeting microcontrollers without an operating system (`no_std`). The driver is designed for high-integrity, deterministic operation, making it ideal for such environments.
+This guide provides instructions for integrating the `smt160-driver` into a baremetal Rust project (`no_std`) without a high-level async runtime or when using custom polling loops.
 
 ## 🎯 Prerequisites
 
 Before you begin, ensure you have:
-
--   A Rust toolchain configured for embedded development (e.g., `rustup target add thumbv7em-none-eabihf`).
--   A Hardware Abstraction Layer (HAL) for your target microcontroller that implements the `embedded-hal-async` traits, particularly for timer capture peripherals. Examples include `stm32-hal`, `esp-hal`, `rp2040-hal`, or `atsamd-hal`.
--   Basic understanding of `no_std` Rust development and asynchronous programming with `async/await`.
+-   A Rust toolchain configured for embedded development (e.g., `thumbv7m-none-eabi`).
+-   A timer peripheral capable of measuring pulse widths (Input Capture mode).
+-   `critical-section` implementation for your platform (if using Flash or atomic features).
 
 ## 📦 Installation
 
-Add the `smt160-driver` and its `fixed` dependency to your project's `Cargo.toml`:
+Add the `smt160-driver` to your `Cargo.toml`:
 
 ```toml
 [dependencies]
 smt160-driver = "0.1.0"
 fixed = { version = "1.27.0", features = ["az"] }
-# Your HAL crate, e.g., for STM32
-# stm32f4xx-hal = { version = "0.1.0", features = ["stm32f401", "async"] }
-# Or for ESP32
-# esp-hal = { version = "0.1.0", features = ["esp32c3", "async"] }
 ```
 
-Ensure your HAL crate is configured to provide `async` capabilities and implements the necessary `embedded-hal-async` traits for timer input capture.
+## ⚙️ Hardware Integration Layer
 
-## ⚙️ Hardware Integration
-
-The `smt160-driver` requires a hardware-specific `CaptureDevice` that can measure the period ($T_p$) and active high ($T_a$) durations of the SMT160's PWM signal. This device must implement the `smt160_driver::CaptureDevice` trait, which typically wraps a high-resolution timer peripheral from your HAL.
-
-The driver leverages `embedded-hal-async`, meaning your `CaptureDevice` implementation will likely involve `async` functions provided by your HAL.
-
-## 🚀 Example Usage
-
-Here's a generic example demonstrating how to use the `smt160-driver` in a baremetal `no_std` environment. This assumes you have an `async` runtime (e.g., a simple executor) and a `CaptureDevice` instance from your HAL.
+If you are not using a pre-supported platform (like STM32F1), you must implement the `CaptureDevice` trait.
 
 ```rust
-#![no_std]
-#![no_main]
-#![feature(type_alias_impl_trait)] // Required for some async executors
+use smt160_driver::platform::CaptureDevice;
 
-use core::panic::PanicInfo;
-use smt160_driver::{Smt160Driver, Reading};
-use smt160_driver::config::StaticConfiguration;
+pub struct MyCustomHardware;
 
-// Assume your HAL provides an async executor and a CaptureDevice implementation
-// This is a placeholder for your actual HAL and executor setup
-mod my_hal {
-    use smt160_driver::CaptureDevice;
-    use core::future::Future;
+impl CaptureDevice for MyCustomHardware {
+    type Error = MyError;
 
-    pub struct MyCaptureDevice;
-
-    impl CaptureDevice for MyCaptureDevice {
-        type Error = (); // Replace with your HAL's error type
-        type CaptureFuture<'a> = impl Future<Output = Result<(u32, u32), Self::Error>> + 'a;
-
-        fn capture<'a>(&'a mut self) -> Self::CaptureFuture<'a> {
-            async move {
-                // In a real application, this would interact with your timer peripheral
-                // and await the capture of period and active high durations.
-                // For demonstration, we'll return dummy values.
-                // These values correspond to a duty cycle of ~0.5, which is ~38.3°C
-                Ok((100_000, 50_000)) // Example: 100,000 timer ticks for period, 50,000 for active high
-            }
-        }
+    fn get_capture_data(&self) -> (u64, u64) {
+        // Read raw period and active ticks from hardware registers
+        let period = read_reg(TIMER_PERIOD);
+        let active = read_reg(TIMER_ACTIVE);
+        (period as u64, active as u64)
     }
 
-    // Your async executor setup would go here
-    // For simplicity, we'll omit a full executor implementation in this example.
-    // You would typically use a crate like `embassy-executor` or a custom one.
-    pub async fn run_async_main<F: Future>(f: F) {
-        f.await
+    async fn wait_for_new_data(&mut self) -> Result<(), Self::Error> {
+        // In a baremetal environment without an executor, this might 
+        // poll a 'ready' bit or wait for an interrupt flag.
+        while !is_data_ready() {
+            core::hint::spin_loop();
+        }
+        Ok(())
     }
 }
+```
 
-#[cortex_m_rt::entry]
-fn main() -> ! {
-    my_hal::run_async_main(async {
-        // 1. Initialize the driver with your hardware-specific capture device
-        let mut sensor = Smt160Driver::new(
-            StaticConfiguration,
-            my_hal::MyCaptureDevice,
-            72, // Timer clock in MHz for high-resolution edge detection (e.g., 72MHz for STM32)
-        );
+## 🚀 Usage Pattern: High-Precision Polling
 
-        // 2. Perform a non-blocking high-precision reading
-        match sensor.read_temperature_celsius().await {
+In baremetal systems where low latency is critical, you can use the `Smt160BlockingDriver` which avoids the overhead of async state machines.
+
+```rust
+use smt160_driver::decoder::Smt160Decoder;
+use smt160_driver::driver_blocking::Smt160BlockingDriver;
+
+fn main() {
+    // 1. Initialize logic engine (e.g. 8MHz timer)
+    let decoder = Smt160Decoder::new_standalone(8);
+    
+    // 2. Wrap hardware and timestamp source
+    let mut sensor = Smt160BlockingDriver::new(
+        pin, 
+        || get_timer_ticks(), 
+        decoder
+    );
+
+    loop {
+        // 3. Perform a blocking measurement with a 100ms timeout
+        match sensor.read_temperature_with_timeout(800_000) {
             Ok(reading) => {
-                let temp_f32: f32 = reading.temperature_celsius.to_num();
-                // In a baremetal context, you might send this over UART, display on an LCD, etc.
-                // For this example, we'll just conceptually "print"
-                // You would use a logging framework like `defmt` here.
-                // defmt::info!("Temperature: {:.3} °C | Status: {:?}", temp_f32, reading.status);
+                // temperature is in reading.temperature_celsius
             }
-            Err(e) => {
-                // Handle hardware system faults
-                // defmt::error!("Hardware System Fault: {:?}", e);
-            }
+            Err(e) => handle_error(e),
         }
-    });
-
-    loop {
-        // Your main loop might put the MCU to sleep or handle other tasks
-        cortex_m::asm::wfi();
-    }
-}
-
-#[panic_handler]
-fn panic(_info: &PanicInfo) -> ! {
-    // Implement your panic handler for baremetal
-    // e.g., turn on an LED, log the error, reset the device
-    loop {
-        cortex_m::asm::bkpt();
     }
 }
 ```
 
-## ✨ Key Considerations for Baremetal
+## ✨ Key Architectural Considerations
 
--   **Fixed-Point Arithmetic**: The driver exclusively uses `I32F32` and `I16F16` fixed-point numbers, eliminating floating-point dependencies and ensuring deterministic behavior on Cortex-M devices without an FPU.
--   **No Allocations**: The driver operates entirely on the stack or statically allocated memory, making it suitable for resource-constrained embedded systems.
--   **Error Handling**: All operations return `Result` types, preventing panics and allowing robust error management.
--   **Timer Configuration**: Correctly configuring your microcontroller's timer to provide accurate period and active-high measurements is crucial for the driver's precision. The `timer_clock_mhz` parameter in `Smt160Driver::new` should match your timer's input clock frequency.
-```
-```diff
+> [!TIP]
+> **Deterministic Execution**: The driver uses fixed-point arithmetic, which is significantly faster and more predictable on MCUs without an FPU (like Cortex-M0/M3).
+
+> [!WARNING]
+> **Interrupt Latency**: If using the polling driver, high interrupt load on the MCU can introduce jitter into the measurement. For 0.05°C precision, ensure your `get_timer_ticks()` source is stable and consider using the `read_temperature_high_precision()` method which wraps the loop in a critical section.
+
+---
+
+## 📐 Accuracy vs. Clock Frequency
+
+To achieve industrial-grade precision, ensure your timer frequency meets the resolution requirements:
+
+| Frequency | Resolution | Status |
+| :--- | :--- | :--- |
+| 1 MHz | 0.21°C | ❌ Low Precision |
+| 8 MHz | 0.026°C | ✅ Standard |
+| 72 MHz | 0.003°C | ✅ Ultra High |

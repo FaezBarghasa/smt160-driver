@@ -1,110 +1,100 @@
-# 📐 SMT160-Driver Architecture Reference
+# 🏗️ SMT160-Driver Architecture Reference
 
-This document details the internal design and module relationships of the `smt160-driver`, emphasizing the **Self-Documenting Clean Architecture** principles used to achieve industrial-grade reliability.
-
----
+This document provides a comprehensive overview of the internal design, module relationships, and data flow of the `smt160-driver`. The project is built on the principles of **Self-Documenting Clean Architecture** to ensure industrial-grade reliability and auditability.
 
 ## 🧱 Module Hierarchy
 
-The driver follows a strict layered architecture to decouple mathematical logic from hardware peripherals.
+The driver is organized into a strictly decoupled hierarchy, ensuring that high-level logic never depends directly on low-level hardware registers.
 
 ```mermaid
 graph TD
-    %% Define Nodes
-    Entry[lib.rs: Public API]
-    Core[Smt160Driver Generic]
-    Math[math.rs: Signal Decoding & NLC]
-    Traits[hal/mod.rs: HAL Traits]
-    HW[hal/stm32f1_dma.rs: HW Implementation]
-    Types[types.rs: Common Domain Models]
-    Error[error.rs: Error Handling]
-    Telemetry[telemetry.rs: Status Reporting]
+    subgraph "Application Layer"
+        Driver[Smt160Driver Generic]
+        Async[Smt160AsyncDriver]
+        Blocking[Smt160BlockingDriver]
+    end
 
-    %% Relationships
-    Entry --> Core
-    Core --> Math
-    Core --> Traits
-    Core --> Types
-    Core --> Error
-    Core --> Telemetry
-    Math --> Error
-    Traits --> HW
+    subgraph "Logic Layer (no_std, no_hal)"
+        Decoder[Smt160Decoder Logic Engine]
+        Math[math.rs: Pure Fixed-Point Math]
+        Types[types.rs: Common Models]
+        Config[config.rs: Physical Constants]
+    end
 
-    %% Styling
-    style Entry fill:#f9f,stroke:#333,stroke-width:2px
-    style Math fill:#dfd,stroke:#333,stroke-width:2px
-    style Core fill:#bbf,stroke:#333,stroke-width:2px
+    subgraph "Hardware Abstraction Layer"
+        Trait[CaptureDevice Trait]
+        STM32[Stm32F1Capture]
+        Mock[VirtualCapture]
+    end
+
+    Driver --> Decoder
+    Driver --> Trait
+    Async --> Decoder
+    Blocking --> Decoder
+    Decoder --> Math
+    Decoder --> Types
+    Decoder --> Config
+    STM32 -- Implements --> Trait
+    Mock -- Implements --> Trait
 ```
 
 ---
 
-## 🔄 Data Flow Sequence
+## 🔄 Core Data Flow (State-Telemetry Pattern)
 
-The following diagram illustrates the lifecycle of a temperature reading from a hardware interrupt to a filtered domain model.
+The driver follows a **State-Telemetry Pattern** to ensure data consistency across asynchronous tasks.
+
+1.  **Capture**: The `CaptureDevice` measures PWM edges and provides raw ticks.
+2.  **Decode**: The `Smt160Decoder` processes these ticks using fixed-point math to derive temperature.
+3.  **Validate**: Readings are checked against industrial safety boundaries and frequency drift limits.
+4.  **Observe**: Health metrics (Jitter RMS, Samples) are updated atomically for external monitoring.
+
+### 📈 PWM Decoding Sequence
 
 ```mermaid
 sequenceDiagram
-    participant HW as STM32 Hardware
-    participant Platform as Platform Layer (hal)
-    participant Driver as Smt160Driver (lib.rs)
-    participant SignalDecoder as SignalDecoder (math.rs)
-    participant Filter as EWMA Filter (Telemetry)
-    
-    HW->>Platform: PWM Edge Captured (Ticks)
-    Platform->>Driver: notify_edge(is_rising, ticks)
-    Driver->>SignalDecoder: push_edge(is_rising, ticks)
-    Note over SignalDecoder: Validate Frequency & Duty Cycle
-    SignalDecoder->>Filter: apply_filter(raw_temp)
-    Filter-->>SignalDecoder: filtered_temp
-    SignalDecoder-->>Driver: Result<Reading>
-    Driver-->>Platform: Return to App
+    participant HW as Timer Peripheral
+    participant CAP as CaptureDevice
+    participant DEC as Smt160Decoder
+    participant APP as Application Task
+
+    HW->>CAP: Rising Edge (T1)
+    CAP->>DEC: push_edge_timestamp(true, T1)
+    DEC-->>DEC: Store T1
+    HW->>CAP: Falling Edge (T2)
+    CAP->>DEC: push_edge_timestamp(false, T2)
+    DEC-->>DEC: Calculate Active High (T2-T1)
+    HW->>CAP: Rising Edge (T3)
+    CAP->>DEC: push_edge_timestamp(true, T3)
+    DEC-->>DEC: Calculate Period (T3-T1)
+    DEC->>DEC: Process Raw Ticks
+    DEC-->>APP: Return Reading { temp, status }
 ```
 
 ---
 
-## 📐 Core Architecture Principles
+## 🛠️ Key Architectural Components
 
-### 1. Multi-Layered Separation
-The driver is strictly decoupled into three distinct layers to ensure portability and testability:
-- **Logic Layer (`math.rs`)**: Contains the pure mathematical state machine for PWM decoding and non-linearity correction. It is completely side-effect free and platform-agnostic.
-- **Abstraction Layer (`hal/mod.rs`)**: Defines the `Smt160TimerInstance` and `Smt160DmaChannel` traits, allowing the core driver logic to interact with hardware in a generic way.
-- **Platform Layer (`hal/*.rs`)**: Contains specific hardware implementations (e.g., `stm32f1_dma.rs` for STM32F1 PWM input capture) that satisfy the Abstraction Layer traits.
+### 1. `Smt160Decoder` (The Passive Logic Core)
+The heart of the driver is a passive state machine. It has **no knowledge of time units** or hardware registers. It only knows about "ticks". This makes it perfectly suitable for unit testing with mocked capture data.
 
-### 2. High-Integrity Data Modeling
-- **`Reading`**: A standardized output structure that couples the temperature value with bit-flagged status metadata.
-- **`Smt160Status`**: A bitfield allowing for simultaneous reporting of multiple hazards (e.g., Signal Loss + High Jitter).
-- **`Smt160Error`**: A unified error enum with detailed human-readable descriptions for diagnostic clarity.
+### 2. `CaptureDevice` Trait
+This trait defines the contract for hardware integration. It requires:
+- `get_capture_data()`: Atomic retrieval of the latest period and active-high ticks.
+- `wait_for_new_data()`: An async hook that suspends the task until a full PWM cycle is captured.
 
-### 3. Arithmetic Strategy: Fixed-Point Determinism
-To ensure bit-perfect consistency across different CPU architectures (with or without FPU), this driver uses **fixed-point arithmetic** via the `fixed` crate:
-- **`I32F32`**: Used for high-precision intermediate calculations (Duty Cycle, Multipliers).
-- **`I16F16`**: Used for final temperature representation and filtering to save memory/cycles while maintaining 0.001°C resolution.
+### 3. Fixed-Point Arithmetic Strategy
+To avoid non-deterministic behavior and the overhead of an FPU, we use:
+- **`I32F32`**: For intermediate duty cycle and temperature calculations (64-bit precision).
+- **`I16F16`**: For the final temperature output and filtering, providing ±0.000015°C theoretical resolution.
 
 ---
 
-## 🛠️ Self-Documenting Code Standards
+## 🛡️ Safety & Integrity Mechanisms
 
-The project follows strict naming and documentation standards to ensure the code is "self-documenting" for safety audits:
+- **Consistent Read 64-bit Timestamps**: Implemented in the STM32 layer to prevent race conditions during 16-bit timer overflows.
+- **Atomic Health Monitoring**: Uses `AtomicU32` and `AtomicU64` to allow concurrent health telemetry without locking.
+- **Piecewise Linear Interpolation**: Allows for 5-point calibration correction to overcome sensor-specific manufacturing variations.
 
-### 1. Domain-Accurate Naming
-Abbreviations are prohibited in public APIs. Names must reflect their physical or logical domain:
-- ✅ `temperature_celsius` (Physical)
-- ✅ `timer_clock_megahertz` (Hardware)
-- ✅ `inverse_step_constant` (Mathematical)
-- ❌ `temp`, `mhz`, `val`, `cfg`
-
-### 2. Documentation Requirements
-Every public item must include a `///` docstring containing:
-1. **Summary**: A one-line description of the item.
-2. **Errors**: Explicit documentation of failure modes (if applicable).
-3. **Panics**: Documentation of any edge cases that could cause a crash (targeted to be empty).
-4. **Usage Example**: A standalone snippet demonstrating the item in context.
-
----
-
-## 🛡️ Safety & Reliability Mechanisms
-
-- **Boundary Validation**: The decoding engine strictly enforces physical sensor limits (0.320-0.980 duty cycle) at every sample.
-- **Frequency Monitoring**: Ensures the sensor is operating within its specified 1kHz-4kHz range, detecting potential oscillator failures.
-- **Adaptive Filtering**: An Exponentially Weighted Moving Average (EWMA) filter that automatically adjusts response speed based on signal volatility, ensuring fast response to real changes while rejecting noise.
-- **Persistent Calibration**: Non-linearity correction is applied within `math.rs` using a pre-defined lookup table, ensuring consistent calibration without external storage.
+> [!NOTE]
+> For more visual representations of these components, see the [Diagrams repository](Diagrams.md).

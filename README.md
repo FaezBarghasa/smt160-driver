@@ -8,7 +8,18 @@ A high-integrity, deterministic Rust driver for the **SMT160** temperature senso
 
 ---
 
-## 🏗️ Architecture: Self-Documenting & Clean
+## 📚 Documentation index
+
+| Document | Description |
+| :--- | :--- |
+| [Architecture](Architecture.md) | Deep dive into the driver's clean architecture and state machines. |
+| [RTIC 2.1 Setup](RTIC2_setup_instruction.md) | Integration guide for Real-Time Interrupt-driven Concurrency. |
+| [Baremetal Setup](baremetal_setup_instruction.md) | Guide for `no_std` environments without an executor. |
+| [User Manual](User_Manual.md) | Wiring, calibration, and operational instructions for technicians. |
+| [Technical Manual](Technical_Manual.md) | Mathematical derivations and performance analysis for engineers. |
+| [Diagrams](Diagrams.md) | Centralized repository for all architectural and sequence diagrams. |
+
+---
 
 This driver implements a **Self-Documenting Clean Architecture**, strictly decoupling core mathematical state machines from hardware-specific capture logic. This ensures a single logic engine can be audited once and deployed across **STM32, ESP32, nRF, or virtualized environments**.
 
@@ -97,6 +108,12 @@ This driver is designed with **MISRA-C** and **IEC 62304** principles in mind:
 
 > [!IMPORTANT]
 > **Boundary Protection**: The driver immediately rejects signals with duty cycles below 0.320 or above 0.980, detecting wiring faults or sensor hardware degradation before they impact control loops.
+
+---
+
+## 🤝 Contributing
+
+Contributions are welcome! Please ensure that any changes maintain the `no_std` compatibility and include relevant documentation updates. For major architectural changes, please open an issue first to discuss the design.
 
 ---
 
