@@ -13,27 +13,27 @@ graph TD
     %% Define Nodes
     Entry[lib.rs: Public API]
     Core[Smt160Driver Generic]
-    Logic[decoder.rs: Logic Engine]
-    Math[math.rs: Deterministic Math]
-    Traits[platform/mod.rs: HAL Traits]
-    HW[platform/stm32f1.rs: HW Implementation]
-    Cal[calibration.rs: Multi-point Correction]
+    Math[math.rs: Signal Decoding & NLC]
+    Traits[hal/mod.rs: HAL Traits]
+    HW[hal/stm32f1_dma.rs: HW Implementation]
     Types[types.rs: Common Domain Models]
+    Error[error.rs: Error Handling]
+    Telemetry[telemetry.rs: Status Reporting]
 
     %% Relationships
     Entry --> Core
-    Core --> Logic
+    Core --> Math
     Core --> Traits
-    Logic --> Math
-    Logic --> Types
+    Core --> Types
+    Core --> Error
+    Core --> Telemetry
+    Math --> Error
     Traits --> HW
-    Core --> Cal
-    Cal --> Math
 
     %% Styling
     style Entry fill:#f9f,stroke:#333,stroke-width:2px
-    style Logic fill:#bbf,stroke:#333,stroke-width:2px
     style Math fill:#dfd,stroke:#333,stroke-width:2px
+    style Core fill:#bbf,stroke:#333,stroke-width:2px
 ```
 
 ---
@@ -45,18 +45,18 @@ The following diagram illustrates the lifecycle of a temperature reading from a 
 ```mermaid
 sequenceDiagram
     participant HW as STM32 Hardware
-    participant Platform as Platform Layer
-    participant Driver as Smt160Driver
-    participant Decoder as Decoder Logic
-    participant Filter as EWMA Filter
+    participant Platform as Platform Layer (hal)
+    participant Driver as Smt160Driver (lib.rs)
+    participant SignalDecoder as SignalDecoder (math.rs)
+    participant Filter as EWMA Filter (Telemetry)
     
     HW->>Platform: PWM Edge Captured (Ticks)
     Platform->>Driver: notify_edge(is_rising, ticks)
-    Driver->>Decoder: push_edge(is_rising, ticks)
-    Note over Decoder: Validate Frequency & Duty Cycle
-    Decoder->>Filter: apply_filter(raw_temp)
-    Filter-->>Decoder: filtered_temp
-    Decoder-->>Driver: Result<Reading>
+    Driver->>SignalDecoder: push_edge(is_rising, ticks)
+    Note over SignalDecoder: Validate Frequency & Duty Cycle
+    SignalDecoder->>Filter: apply_filter(raw_temp)
+    Filter-->>SignalDecoder: filtered_temp
+    SignalDecoder-->>Driver: Result<Reading>
     Driver-->>Platform: Return to App
 ```
 
@@ -66,9 +66,9 @@ sequenceDiagram
 
 ### 1. Multi-Layered Separation
 The driver is strictly decoupled into three distinct layers to ensure portability and testability:
-- **Logic Layer (`decoder.rs`, `math.rs`)**: Contains the pure mathematical state machine for PWM decoding. It is completely side-effect free and platform-agnostic.
-- **Abstraction Layer (`platform/mod.rs`)**: Defines the `CaptureDevice` trait, allowing the logic layer to interact with hardware in a generic way.
-- **Platform Layer (`platform/*.rs`)**: Contains specific hardware implementations (e.g., STM32F1 PWM input capture) that satisfy the Abstraction Layer.
+- **Logic Layer (`math.rs`)**: Contains the pure mathematical state machine for PWM decoding and non-linearity correction. It is completely side-effect free and platform-agnostic.
+- **Abstraction Layer (`hal/mod.rs`)**: Defines the `Smt160TimerInstance` and `Smt160DmaChannel` traits, allowing the core driver logic to interact with hardware in a generic way.
+- **Platform Layer (`hal/*.rs`)**: Contains specific hardware implementations (e.g., `stm32f1_dma.rs` for STM32F1 PWM input capture) that satisfy the Abstraction Layer traits.
 
 ### 2. High-Integrity Data Modeling
 - **`Reading`**: A standardized output structure that couples the temperature value with bit-flagged status metadata.
@@ -107,5 +107,4 @@ Every public item must include a `///` docstring containing:
 - **Boundary Validation**: The decoding engine strictly enforces physical sensor limits (0.320-0.980 duty cycle) at every sample.
 - **Frequency Monitoring**: Ensures the sensor is operating within its specified 1kHz-4kHz range, detecting potential oscillator failures.
 - **Adaptive Filtering**: An Exponentially Weighted Moving Average (EWMA) filter that automatically adjusts response speed based on signal volatility, ensuring fast response to real changes while rejecting noise.
-- **Persistent Calibration**: The `calibration.rs` module supports persistent storage of calibration offsets, with an industrial backend implementation for STM32 Flash.
-
+- **Persistent Calibration**: Non-linearity correction is applied within `math.rs` using a pre-defined lookup table, ensuring consistent calibration without external storage.
