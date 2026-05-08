@@ -67,24 +67,29 @@ pub struct Reading {
     pub status: Smt160Status,
 }
 
-/// Health metrics and diagnostic telemetry for the SMT160 sensor subsystem.
-///
-/// # Usage Example
-/// ```
-/// use smt160_driver::Smt160Health;
-/// let health = Smt160Health::default();
-/// println!("Total Samples: {}", health.total_samples_count);
-/// ```
+/// Advanced diagnostic health metrics for industrial deployments.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct Smt160Health {
-    /// The Root Mean Square (RMS) jitter of the captured PWM signal in timer ticks.
-    pub jitter_rms_ticks: u32,
-    /// The measured frequency drift of the sensor signal in Hertz (Hz).
-    pub frequency_drift_hz: i32,
-    /// The total number of valid samples processed since driver initialization.
-    pub total_samples_count: u64,
-    /// The total number of processing or hardware errors encountered.
-    pub error_total_count: u32,
+pub struct IndustrialHealth {
+    /// Total valid samples processed since initialization.
+    pub total_samples: u64,
+    /// Number of signal loss events detected (self-healing triggers).
+    pub signal_loss_count: u32,
+    /// Number of DMA transfer errors or buffer overruns.
+    pub hardware_fault_count: u32,
+    /// Current signal jitter in timer ticks (Industrial limit: <50 ticks).
+    pub jitter_ticks: u32,
+}
+
+/// Real-time performance statistics for system integration validation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct ProcessingStats {
+    /// CPU cycles spent in the last processing batch.
+    pub cycles_last_batch: u32,
+    /// Maximum CPU cycles recorded in any batch.
+    pub cycles_max_observed: u32,
+    /// Percentage of CPU utilization (multiplied by 100 for fixed-point).
+    pub cpu_load_scaled: u32,
 }
 

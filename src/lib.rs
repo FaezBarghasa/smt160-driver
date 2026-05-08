@@ -23,7 +23,7 @@ pub mod i2c_telemetry;
 pub mod stm32f1;
 
 pub use error::Smt160Error;
-pub use types::{Reading, Smt160Status, Smt160Health};
+pub use types::{Reading, Smt160Status, IndustrialHealth, ProcessingStats};
 
 /// High-level generic SMT160 driver instance.
 /// 
@@ -47,8 +47,8 @@ pub struct Smt160Driver<C, CAP> {
     pub capture_device: CAP,
     /// The internal decoding state machine.
     pub decoder: decoder::Smt160Decoder,
-    /// Real-time health metrics and diagnostics.
-    pub health_monitor: Smt160Health,
+    /// Real-time industrial health metrics and diagnostics.
+    pub health_monitor: IndustrialHealth,
 }
 
 impl<C, CAP> Smt160Driver<C, CAP> 
@@ -75,15 +75,12 @@ where
             configuration,
             capture_device,
             decoder: decoder::Smt160Decoder::new_standalone(timer_clock_megahertz),
-            health_monitor: Smt160Health::default(),
+            health_monitor: IndustrialHealth::default(),
         }
     }
 
-    /// Retrieves the latest diagnostic health metrics from the sensor subsystem.
-    ///
-    /// # Panics
-    /// This function does not panic.
-    pub fn get_diagnostic_health(&self) -> Smt160Health {
+    /// Retrieves the latest industrial diagnostic health metrics.
+    pub fn get_diagnostic_health(&self) -> IndustrialHealth {
         self.health_monitor
     }
 

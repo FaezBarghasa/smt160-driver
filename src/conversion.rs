@@ -54,8 +54,10 @@ pub fn i16f16_to_bytes(value: I16F16) -> [u8; 4] {
 /// assert_eq!(active, 500);
 /// ```
 pub fn unpack_dma_capture(word: u32) -> (u64, u64) {
-    let period_ticks = (word >> 16) as u64;
-    let active_ticks = (word & 0xFFFF) as u64;
+    // STM32 Standard: CCR1 (Period) is at lower address, CCR2 (Active) at higher.
+    // In a 32-bit word, CCR1 is the lower 16 bits.
+    let period_ticks = (word & 0xFFFF) as u64;
+    let active_ticks = (word >> 16) as u64;
     (period_ticks, active_ticks)
 }
 

@@ -38,3 +38,22 @@ impl Smt160Config for StaticConfiguration {
         (DUTY_CYCLE_OFFSET, INVERSE_STEP_CONSTANT)
     }
 }
+
+/// Macro for defining a hardcoded SMT160 configuration.
+/// 
+/// # Usage Example
+/// ```
+/// use smt160_driver::smt160_config;
+/// smt160_config!(MyConfig, 0.320, 212.76);
+/// ```
+#[macro_export]
+macro_rules! smt160_config {
+    ($name:ident, $offset:expr, $step:expr) => {
+        pub struct $name;
+        impl $crate::config::Smt160Config for $name {
+            fn get_offsets(&self) -> ($crate::fixed::types::I32F32, $crate::fixed::types::I32F32) {
+                ($crate::fixed::types::I32F32::from_num($offset), $crate::fixed::types::I32F32::from_num($step))
+            }
+        }
+    };
+}

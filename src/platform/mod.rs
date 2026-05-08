@@ -1,10 +1,8 @@
-//! Hardware Abstraction Layer (HAL) for the SMT160 Sensor.
-//! 
-//! This module defines the standardized traits required for hardware capture 
-//! implementations. By implementing `CaptureDevice`, new microcontrollers can 
-//! be supported without modifying the core decoding logic.
+pub mod mock;
+pub mod stm32f1;
 
-use core::future::Future;
+#[cfg(feature = "stm32f1")]
+pub mod stm32f1_managed;
 
 /// Abstract interface for hardware PWM pulse capture.
 /// 
