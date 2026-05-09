@@ -16,7 +16,7 @@ mod app {
 
     #[shared]
     struct Shared {
-        driver: Smt160Driver<Stm32F1DmaHal<pac::TIM2, stm32f1xx_hal::dma::dma1::C4>, Ready>,
+        driver: Smt160Driver<Stm32F1DmaHal<'static, pac::TIM2, stm32f1xx_hal::dma::dma1::C4>, Ready>,
     }
 
     #[local]

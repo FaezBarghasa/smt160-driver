@@ -44,7 +44,7 @@ pub trait Smt160Hal {
     ///
     /// This allows the driver to yield control while waiting for hardware 
     /// DMA or interrupt events.
-    async fn wait_for_new_data(&mut self) -> Result<(), Smt160Error>;
+    fn wait_for_new_data(&mut self) -> impl core::future::Future<Output = Result<(), Smt160Error>>;
 
     /// Notifies the HAL that an interrupt has occurred.
     ///

@@ -25,6 +25,7 @@ use crate::hal::Smt160Hal;
 /// Configuration for the SMT160 driver, allowing tuning for different environments.
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Config {
     /// Jitter tolerance as a percentage (e.g., 0.005 for 0.5%).
     pub jitter_threshold_pct: I32F32,

@@ -55,21 +55,26 @@ impl Smt160DmaBuffer {
 use embassy_sync::waitqueue::AtomicWaker;
 
 /// STM32F1-specific implementation of the SMT160 HAL using DMA Burst and Timer Slave-Reset.
-pub struct Stm32F1DmaHal<TIM, DMA> {
+/// STM32F1-specific implementation of the SMT160 HAL using DMA Burst and Timer Slave-Reset.
+pub struct Stm32F1DmaHal<'a, TIM, DMA> 
+where 
+    TIM: Smt160TimerInstance,
+    DMA: Smt160DmaChannel,
+{
     timer: TIM,
     dma: DMA,
-    buffer: &'static mut Smt160DmaBuffer,
+    buffer: &'a mut Smt160DmaBuffer,
     waker: AtomicWaker,
     timer_channel: u8,
 }
 
-impl<TIM, DMA> Stm32F1DmaHal<TIM, DMA> 
+impl<'a, TIM, DMA> Stm32F1DmaHal<'a, TIM, DMA> 
 where 
     TIM: Smt160TimerInstance,
     DMA: Smt160DmaChannel,
 {
     /// Creates a new STM32F1 DMA adapter for a specific timer channel (1 or 3).
-    pub fn new(timer: TIM, dma: DMA, buffer: &'static mut Smt160DmaBuffer, timer_channel: u8) -> Self {
+    pub fn new(timer: TIM, dma: DMA, buffer: &'a mut Smt160DmaBuffer, timer_channel: u8) -> Self {
         Self { 
             timer, 
             dma, 
@@ -80,7 +85,7 @@ where
     }
 }
 
-impl<TIM, DMA> Smt160Hal for Stm32F1DmaHal<TIM, DMA>
+impl<'a, TIM, DMA> Smt160Hal for Stm32F1DmaHal<'a, TIM, DMA>
 where 
     TIM: Smt160TimerInstance,
     DMA: Smt160DmaChannel,
@@ -113,7 +118,7 @@ where
         *edge
     }
 
-    async fn wait_for_new_data(&mut self) -> Result<(), Smt160Error> {
+    fn wait_for_new_data(&mut self) -> impl core::future::Future<Output = Result<(), Smt160Error>> {
         core::future::poll_fn(|cx| {
             self.waker.register(cx.waker());
             if self.is_new_data_available() {
@@ -121,11 +126,22 @@ where
             } else {
                 core::task::Poll::Pending
             }
-        }).await
+        })
     }
 
     fn notify(&self) {
         self.waker.wake();
+    }
+}
+
+impl<'a, TIM, DMA> Drop for Stm32F1DmaHal<'a, TIM, DMA>
+where
+    TIM: Smt160TimerInstance,
+    DMA: Smt160DmaChannel,
+{
+    fn drop(&mut self) {
+        self.dma.disable();
+        self.timer.reset_hardware();
     }
 }
 
@@ -244,7 +260,7 @@ macro_rules! impl_smt160_dma {
 
                     ch.par.write(|w| unsafe { w.pa().bits(peripheral_addr) });
                     ch.mar.write(|w| unsafe { w.ma().bits(memory_addr as u32) });
-                    ch.ndtr.write(|w| unsafe { w.ndt().bits(len) });
+                    ch.ndtr.write(|w| w.ndt().bits(len));
 
                     // CR: 32-bit MSIZE/PSIZE, MINC, CIRC, HTIE, TCIE, EN
                     ch.cr.modify(|_, w| unsafe {

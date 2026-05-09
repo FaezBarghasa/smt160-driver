@@ -6,6 +6,7 @@ bitflags! {
     /// These flags allow the application layer to monitor the electrical 
     /// health of the sensor connection and the signal integrity.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
     pub struct Smt160Status: u8 {
         /// Signal jitter exceeds 0.5% threshold. Indicates EMI or loose wiring.
         const JITTER_DETECTED = 1 << 0;
@@ -31,6 +32,7 @@ impl defmt::Format for Smt160Status {
 /// of raw timer ticks with O(1) space and time.
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Diagnostics {
     pub mean_ticks: f32,
     pub m2_ticks: f32,

@@ -11,6 +11,7 @@ pub trait Calibration {
 /// A simple linear calibration (Slope and Offset).
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct LinearCalibration {
     pub slope: I32F32,
     pub offset: I32F32,
