@@ -57,6 +57,7 @@ fn test_adaptive_filtering() {
     let temp2 = driver.read_temperature().unwrap();
     
     // Expected: 25 + 0.8 * (35 - 25) = 33
+    println!("Temp1: {}, Temp2: {}", temp1.to_num::<f32>(), temp2.to_num::<f32>());
     assert!(temp2 > I32F32::from_num(32) && temp2 < I32F32::from_num(34));
 }
 
