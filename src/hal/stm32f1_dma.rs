@@ -180,44 +180,44 @@ macro_rules! impl_smt160_timer {
                 match channel {
                     1 => {
                         self.ccmr1_input().modify(|_, w| w.cc1s().ti1().cc2s().ti1());
-                        self.ccer().modify(|_, w| w.cc1p().clear_bit().cc2p().set_bit().cc1e().set_bit().cc2e().set_bit());
-                        self.smcr().modify(|_, w| w.ts().ti1fp1().sms().reset_mode());
+                        self.ccer.modify(|_, w| w.cc1p().clear_bit().cc2p().set_bit().cc1e().set_bit().cc2e().set_bit());
+                        self.smcr.modify(|_, w| w.ts().ti1fp1().sms().reset_mode());
                     }
                     3 => {
                         self.ccmr2_input().modify(|_, w| w.cc3s().ti3().cc4s().ti3());
-                        self.ccer().modify(|_, w| w.cc3p().clear_bit().cc4p().set_bit().cc3e().set_bit().cc4e().set_bit());
+                        self.ccer.modify(|_, w| w.cc3p().clear_bit().cc4p().set_bit().cc3e().set_bit().cc4e().set_bit());
                         // Note: STM32F1 Slave Mode Reset only supports TI1FP1 and TI2FP2.
                         // For CH3/CH4, we still use TI1FP1 as the reset source if they are synchronized,
                         // or this driver configuration may be invalid for independent CH3/CH4 sensors.
-                        self.smcr().modify(|_, w| w.ts().ti1fp1().sms().reset_mode());
+                        self.smcr.modify(|_, w| w.ts().ti1fp1().sms().reset_mode());
                     }
                     _ => panic!("SMT160 driver only supports channels 1 and 3 on STM32F1"),
                 }
-                self.cr1().modify(|_, w| w.cen().set_bit());
+                self.cr1.modify(|_, w| w.cen().set_bit());
             }
 
             fn setup_dma_burst(&self, channel: u8) {
                 match channel {
                     1 => {
-                        self.dcr().modify(|_, w| unsafe { w.dba().bits(13).dbl().bits(1) });
-                        self.dier().modify(|_, w| w.cc1de().set_bit());
+                        self.dcr.modify(|_, w| unsafe { w.dba().bits(13).dbl().bits(1) });
+                        self.dier.modify(|_, w| w.cc1de().set_bit());
                     }
                     3 => {
-                        self.dcr().modify(|_, w| unsafe { w.dba().bits(15).dbl().bits(1) });
-                        self.dier().modify(|_, w| w.cc3de().set_bit());
+                        self.dcr.modify(|_, w| unsafe { w.dba().bits(15).dbl().bits(1) });
+                        self.dier.modify(|_, w| w.cc3de().set_bit());
                     }
                     _ => panic!("SMT160 driver only supports channels 1 and 3 on STM32F1"),
                 }
             }
 
             fn dmar_address(&self) -> u32 {
-                self.dmar().as_ptr() as u32
+                self.dmar.as_ptr() as u32
             }
 
             fn reset_hardware(&self) {
-                self.cr1().modify(|_, w| w.cen().clear_bit());
-                self.dier().modify(|_, w| w.cc1de().clear_bit().cc2de().clear_bit().cc3de().clear_bit().cc4de().clear_bit());
-                self.sr().write(|w| unsafe { w.bits(0) });
+                self.cr1.modify(|_, w| w.cen().clear_bit());
+                self.dier.modify(|_, w| w.cc1de().clear_bit().cc2de().clear_bit().cc3de().clear_bit().cc4de().clear_bit());
+                self.sr.write(|w| unsafe { w.bits(0) });
             }
         }
     };
@@ -237,17 +237,17 @@ macro_rules! impl_smt160_dma {
             impl Smt160DmaChannel for stm32f1xx_hal::dma::dma1::$CH {
                 unsafe fn setup_circular_capture(&self, peripheral_addr: u32, memory_addr: *mut u32, len: u16) {
                     let dma1 = unsafe { &*pac::DMA1::ptr() };
-                    let ch = dma1.$field();
+                    let ch = &dma1.$field;
 
                     // Disable before configuration
-                    ch.cr().modify(|_, w| w.en().clear_bit());
+                    ch.cr.modify(|_, w| w.en().clear_bit());
 
-                    ch.par().write(|w| unsafe { w.pa().bits(peripheral_addr) });
-                    ch.mar().write(|w| unsafe { w.ma().bits(memory_addr as u32) });
-                    ch.ndtr().write(|w| unsafe { w.ndt().bits(len) });
+                    ch.par.write(|w| unsafe { w.pa().bits(peripheral_addr) });
+                    ch.mar.write(|w| unsafe { w.ma().bits(memory_addr as u32) });
+                    ch.ndtr.write(|w| unsafe { w.ndt().bits(len) });
 
                     // CR: 32-bit MSIZE/PSIZE, MINC, CIRC, HTIE, TCIE, EN
-                    ch.cr().modify(|_, w| unsafe {
+                    ch.cr.modify(|_, w| unsafe {
                         w.msize().bits(0b10);
                         w.psize().bits(0b10);
                         w.minc().set_bit();
@@ -260,22 +260,22 @@ macro_rules! impl_smt160_dma {
 
                 fn clear_interrupt_flags(&self) {
                     let dma1 = unsafe { &*pac::DMA1::ptr() };
-                    dma1.ifcr().write(|w| unsafe { w.bits(0xF << ($offset * 4)) });
+                    dma1.ifcr.write(|w| unsafe { w.bits(0xF << ($offset * 4)) });
                 }
 
                 fn is_half_transfer(&self) -> bool {
                     let dma1 = unsafe { &*pac::DMA1::ptr() };
-                    (dma1.isr().read().bits() >> ($offset * 4 + 2)) & 1 != 0
+                    (dma1.isr.read().bits() >> ($offset * 4 + 2)) & 1 != 0
                 }
 
                 fn is_transfer_complete(&self) -> bool {
                     let dma1 = unsafe { &*pac::DMA1::ptr() };
-                    (dma1.isr().read().bits() >> ($offset * 4 + 1)) & 1 != 0
+                    (dma1.isr.read().bits() >> ($offset * 4 + 1)) & 1 != 0
                 }
 
                 fn disable(&self) {
                     let dma1 = unsafe { &*pac::DMA1::ptr() };
-                    dma1.$field().cr().modify(|_, w| w.en().clear_bit());
+                    dma1.$field.cr.modify(|_, w| w.en().clear_bit());
                 }
             }
         )+

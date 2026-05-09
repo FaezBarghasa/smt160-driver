@@ -9,7 +9,7 @@ license = "MIT OR Apache-2.0"
 [dependencies]
 fixed = { version = "1.23", features = ["num-traits"] }
 fugit = "0.3"
-bitflags = "2.4"
+bitflags = { version = "2.4" }
 defmt = { version = "0.3", optional = true }
 embedded-hal = "1.0"
 embedded-hal-async = "1.0"
@@ -18,7 +18,8 @@ cfg-if = "1.0"
 libm = "0.2"
 embassy-sync = { version = "0.6", features = ["defmt"] }
 rtic-monotonics = { version = "2.1", features = ["cortex-m-systick"] }
-stm32f1xx-hal = { version = "0.10.0", features = ["rt", "medium", "defmt"], optional = true }
+stm32f1xx-hal = { version = "0.10.0", features = ["rt", "stm32f103"], optional = true }
+serde = { version = "1.0", default-features = false, features = ["derive"], optional = true }
 
 [dev-dependencies]
 rtic = { version = "2.1", features = ["thumbv7-backend"] }
@@ -30,5 +31,6 @@ defmt-rtt = "0.4.1"
 [features]
 default = ["stm32f1xx", "defmt"]
 std = []
-defmt = ["dep:defmt", "embassy-sync/defmt"]
+defmt = ["dep:defmt", "embassy-sync/defmt", "fixed/defmt"]
+serde = ["dep:serde", "bitflags/serde", "fixed/serde"]
 stm32f1xx = ["dep:stm32f1xx-hal"]

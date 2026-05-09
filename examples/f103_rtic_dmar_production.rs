@@ -4,19 +4,15 @@
 use defmt_rtt as _;
 use panic_probe as _;
 use rtic::app;
-use rtic_monotonics::systick_monotonic;
-
-systick_monotonic!(Mono, 1_000);
-
-use rtic_monotonics::Monotonic;
-use smt160_driver::hal::stm32f1_dma::{Stm32F1DmaHal, validate_clocks};
-use smt160_driver::hal::Smt160Hal;
-use smt160_driver::{Config, Ready, Smt160Driver, Smt160Status};
-use stm32f1xx_hal::{pac, prelude::*};
-
 #[app(device = pac, dispatchers = [USART1])]
 mod app {
-    use super::*;
+    use stm32f1xx_hal::{pac, prelude::*};
+    use smt160_driver::hal::stm32f1_dma::{Stm32F1DmaHal, validate_clocks};
+    use smt160_driver::hal::Smt160Hal;
+    use smt160_driver::{Config, Ready, Smt160Driver, Smt160Status};
+    use rtic_monotonics::systick_monotonic;
+    use rtic_monotonics::Monotonic;
+    systick_monotonic!(Mono, 1_000);
 
     #[shared]
     struct Shared {
@@ -29,24 +25,25 @@ mod app {
     #[init]
     fn init(cx: init::Context) -> (Shared, Local) {
         let mut flash = cx.device.FLASH.constrain();
+        let rcc = cx.device.RCC.constrain();
+
         // CRITICAL: Enable TIM2 peripheral clock before access
-        cx.device.RCC.apb1enr().modify(|_, w| w.tim2en().set_bit());
+        // In PAC 0.15, apb1enr is a field
+        unsafe { (*pac::RCC::ptr()).apb1enr.modify(|_, w| w.tim2en().set_bit()) };
 
-        let mut rcc = cx.device.RCC.freeze(
-            stm32f1xx_hal::rcc::Config::hse(8.MHz())
-                .sysclk(72.MHz())
-                .pclk1(36.MHz()),
-            &mut flash.acr,
-        );
+        let clocks = rcc.cfgr
+            .use_hse(8.MHz())
+            .sysclk(72.MHz())
+            .pclk1(36.MHz())
+            .freeze(&mut flash.acr);
 
-        let clocks = rcc.clocks;
         validate_clocks(&clocks).expect("Clock validation failed: APB1 must be >= 8MHz");
 
         defmt::info!("SMT160 Production Driver Initializing...");
         defmt::info!("System Clock: 72000000 Hz");
 
         // PA0 is TIM2_CH1 (TI1) for the SMT160 Signal Input
-        let mut gpioa = cx.device.GPIOA.split(&mut rcc);
+        let mut gpioa = cx.device.GPIOA.split();
         let _pin = gpioa.pa0.into_floating_input(&mut gpioa.crl);
         defmt::info!("GPIO Initialized");
 
@@ -55,7 +52,7 @@ mod app {
         static mut DMA_BUFFER: smt160_driver::hal::stm32f1_dma::Smt160DmaBuffer = 
             smt160_driver::hal::stm32f1_dma::Smt160DmaBuffer::new();
 
-        let dma1 = cx.device.DMA1.split(&mut rcc);
+        let dma1 = cx.device.DMA1.split();
         defmt::info!("DMA Initialized");
 
         // TIM2_CH1 DMA request is on Channel 4
