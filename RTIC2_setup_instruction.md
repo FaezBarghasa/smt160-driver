@@ -53,8 +53,11 @@ fn init(cx: init::Context) -> (Shared, Local) {
     static mut DMA_BUFFER: [u32; 4] = [0; 4];
 
     // 2. Initialize DMA and Timer
+    // CRITICAL: Enable TIM2 clock before access
+    cx.device.RCC.apb1enr.modify(|_, w| w.tim2en().set_bit());
+
     let dma1 = cx.device.DMA1.split(&mut rcc);
-    let hal = Stm32F1DmaHal::new(cx.device.TIM2, dma1.4, unsafe { &mut DMA_BUFFER });
+    let hal = Stm32F1DmaHal::new(cx.device.TIM2, dma1.ch4, unsafe { &mut DMA_BUFFER });
 
     // 3. Create and Initialize Driver
     let driver = Smt160Driver::new(hal, Config::industrial())

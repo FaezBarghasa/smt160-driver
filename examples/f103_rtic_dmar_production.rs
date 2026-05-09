@@ -28,6 +28,9 @@ mod app {
     #[init]
     fn init(cx: init::Context) -> (Shared, Local) {
         let mut flash = cx.device.FLASH.constrain();
+        // CRITICAL: Enable TIM2 peripheral clock before access
+        cx.device.RCC.apb1enr().modify(|_, w| w.tim2en().set_bit());
+
         let mut rcc = cx.device.RCC.freeze(
             stm32f1xx_hal::rcc::Config::hse(8.MHz())
                 .sysclk(72.MHz())
@@ -39,17 +42,19 @@ mod app {
         validate_clocks(&clocks).expect("Clock validation failed: APB1 must be >= 8MHz");
 
         defmt::info!("SMT160 Production Driver Initializing...");
-        defmt::info!("System Clock: {} Hz", clocks.sysclk().to_Hz());
+        defmt::info!("System Clock: 72000000 Hz");
 
         // PA0 is TIM2_CH1 (TI1) for the SMT160 Signal Input
         let mut gpioa = cx.device.GPIOA.split(&mut rcc);
         let _pin = gpioa.pa0.into_floating_input(&mut gpioa.crl);
+        defmt::info!("GPIO Initialized");
 
         // Circular DMA Buffer for CCR1 and CCR2 captures
         // Format: [CCR1_0, CCR2_0, CCR1_1, CCR2_1]
         static mut DMA_BUFFER: [u32; 4] = [0; 4];
 
         let dma1 = cx.device.DMA1.split(&mut rcc);
+        defmt::info!("DMA Initialized");
 
         // TIM2_CH1 DMA request is on Channel 4
         let hal = Stm32F1DmaHal::new(cx.device.TIM2, dma1.4, unsafe {
@@ -57,11 +62,13 @@ mod app {
         });
 
         let driver = Smt160Driver::new(hal, Config::industrial())
-            .init(clocks.pclk1().to_Hz())
+            .init(72_000_000)
             .unwrap();
+        defmt::info!("Driver Initialized");
 
         // Initialize Systick for 1ms resolution watchdog (72MHz)
         Mono::start(cx.core.SYST, 72_000_000);
+        defmt::info!("Monotonic Started");
 
         watchdog::spawn().ok();
 
@@ -89,6 +96,7 @@ mod app {
         loop {
             // Check sensor health every 10ms
             Mono::delay(10.millis()).await;
+            defmt::info!("Watchdog Tick");
 
             cx.shared.driver.lock(|driver| {
                 if driver.status().contains(Smt160Status::SENSOR_TIMEOUT) {
@@ -96,7 +104,7 @@ mod app {
                         "Sensor Flatline Detected! Attempting autonomous hardware recovery..."
                     );
                     // Re-initialize the HAL to reset hardware state
-                    let _ = driver.reinit(36_000_000);
+                    let _ = driver.reinit(72_000_000);
                 }
 
                 if driver.status().contains(Smt160Status::OUT_OF_BOUNDS) {
