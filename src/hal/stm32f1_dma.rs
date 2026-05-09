@@ -152,7 +152,7 @@ macro_rules! impl_smt160_timer {
             }
 
             fn dmar_address(&self) -> u32 {
-                &self.dmar() as *const _ as u32
+                self.dmar().as_ptr() as u32
             }
 
             fn reset_hardware(&self) {
