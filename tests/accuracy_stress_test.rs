@@ -1,62 +1,76 @@
-use smt160_driver::decoder::Smt160Decoder;
-use fixed::types::I16F16;
+use smt160_driver::hal::{Smt160Hal, CapturedEdge};
+use smt160_driver::error::Smt160Error;
+use smt160_driver::{Smt160Driver, Config, Smt160Status};
+use fixed::types::I32F32;
+use core::cell::RefCell;
+
+struct MockHal {
+    next_data: RefCell<Option<CapturedEdge>>,
+}
+
+impl Smt160Hal for MockHal {
+    fn setup(&mut self, _freq: u32) -> Result<(), Smt160Error> {
+        Ok(())
+    }
+
+    fn is_new_data_available(&self) -> bool {
+        self.next_data.borrow().is_some()
+    }
+
+    fn read_raw(&self) -> CapturedEdge {
+        self.next_data.borrow_mut().take().unwrap()
+    }
+}
 
 #[test]
-fn accuracy_stress_test_jitter() {
-    let timer_clock_mhz = 8;
-    let mut decoder = Smt160Decoder::new_standalone(timer_clock_mhz);
-    
-    // SMT160 output at 25C: Duty cycle around 0.32 + 0.0047 * 25 = 0.4375
-    // Let's assume a period of 4000 ticks (for 8MHz, that's 2kHz signal, typical for SMT160)
-    let period_ticks = 4000u64;
-    let active_ticks = 1750u64; // 1750 / 4000 = 0.4375
-    
-    // Feed 500 noisy pulses
-    let mut min_temp = I16F16::MAX;
-    let mut max_temp = I16F16::MIN;
-    
-    // Pseudo-random noise of +/- 2 ticks
-    let mut prng_state = 12345u32;
-    let mut next_rand = || -> i64 {
-        prng_state = prng_state.wrapping_mul(1103515245).wrapping_add(12345);
-        ((prng_state >> 16) % 5) as i64 - 2 // -2, -1, 0, 1, 2
-    };
+fn test_jitter_detection() {
+    let hal = MockHal { next_data: RefCell::new(None) };
+    let mut driver = Smt160Driver::new(hal, Config::industrial())
+        .init(1000)
+        .unwrap();
 
-    let duty_cycle_offset = smt160_driver::config::DUTY_CYCLE_OFFSET;
-    let inverse_step_constant = smt160_driver::config::INVERSE_STEP_CONSTANT;
+    // First sample: stable
+    *driver.hal_mut().next_data.borrow_mut() = Some(CapturedEdge { period_ticks: 1000, high_ticks: 437 });
+    driver.read_temperature();
+    assert!(!driver.status().contains(Smt160Status::JITTER_DETECTED));
 
-    // Warm-up to let EMA settle (100 samples)
-    for _ in 0..100 {
-        let noise_period = next_rand();
-        let noise_active = next_rand();
-        let p = (period_ticks as i64 + noise_period) as u64;
-        let a = (active_ticks as i64 + noise_active) as u64;
-        let _ = decoder.process_raw_ticks(p, a, duty_cycle_offset, inverse_step_constant);
-    }
+    // Second sample: 0.6% jitter (> 0.5% industrial threshold)
+    *driver.hal_mut().next_data.borrow_mut() = Some(CapturedEdge { period_ticks: 1006, high_ticks: 440 });
+    driver.read_temperature();
+    assert!(driver.status().contains(Smt160Status::JITTER_DETECTED));
+}
 
-    // Now test 500 pulses
-    for _ in 0..500 {
-        let noise_period = next_rand();
-        let noise_active = next_rand();
-        let p = (period_ticks as i64 + noise_period) as u64;
-        let a = (active_ticks as i64 + noise_active) as u64;
-        
-        let reading = decoder.process_raw_ticks(p, a, duty_cycle_offset, inverse_step_constant).unwrap();
-        
-        if reading.temperature_celsius < min_temp {
-            min_temp = reading.temperature_celsius;
-        }
-        if reading.temperature_celsius > max_temp {
-            max_temp = reading.temperature_celsius;
-        }
-    }
+#[test]
+fn test_adaptive_filtering() {
+    let hal = MockHal { next_data: RefCell::new(None) };
+    let mut driver = Smt160Driver::new(hal, Config::industrial())
+        .init(1000)
+        .unwrap();
+
+    // Sample 1: 25°C
+    *driver.hal_mut().next_data.borrow_mut() = Some(CapturedEdge { period_ticks: 1000, high_ticks: 437 });
+    let temp1 = driver.read_temperature().unwrap();
     
-    let jitter = max_temp - min_temp;
-    let max_jitter = I16F16::from_num(0.02);
+    // Sample 2: Sudden jump to 35°C (> 5°C deviation, should use alpha=0.8)
+    // DC for 35°C: T = (DC - 0.320) / 0.0047 -> 35 * 0.0047 + 0.320 = 0.4845
+    *driver.hal_mut().next_data.borrow_mut() = Some(CapturedEdge { period_ticks: 1000, high_ticks: 484 });
+    let temp2 = driver.read_temperature().unwrap();
     
-    println!("Min Temp: {}", min_temp);
-    println!("Max Temp: {}", max_temp);
-    println!("Jitter: {}", jitter);
+    // Expected: 25 + 0.8 * (35 - 25) = 33
+    assert!(temp2 > I32F32::from_num(32) && temp2 < I32F32::from_num(34));
+}
+
+#[test]
+fn test_invalid_signal() {
+    let hal = MockHal { next_data: RefCell::new(None) };
+    let mut driver = Smt160Driver::new(hal, Config::industrial())
+        .init(1000)
+        .unwrap();
+
+    // Active > Period
+    *driver.hal_mut().next_data.borrow_mut() = Some(CapturedEdge { period_ticks: 1000, high_ticks: 1200 });
+    let result = driver.read_temperature();
     
-    assert!(jitter < max_jitter, "Filtered jitter {} exceeds maximum allowed {}", jitter, max_jitter);
+    assert!(result.is_none());
+    assert!(driver.status().contains(Smt160Status::OUT_OF_BOUNDS));
 }
