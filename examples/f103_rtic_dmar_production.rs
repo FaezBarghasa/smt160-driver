@@ -6,7 +6,7 @@ use panic_probe as _;
 use rtic::app;
 use rtic_monotonics::systick_monotonic;
 
-systick_monotonic!(Mono, 72_000_000);
+systick_monotonic!(Mono, 8_000_000);
 
 use rtic_monotonics::Monotonic;
 use smt160_driver::hal::stm32f1_dma::{Stm32F1DmaHal, validate_clocks};
