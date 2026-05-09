@@ -6,14 +6,14 @@ use panic_probe as _;
 use rtic::app;
 use rtic_monotonics::systick_monotonic;
 
-systick_monotonic!(Mono, 8_000_000);
+systick_monotonic!(Mono, 1_000);
 
 use rtic_monotonics::Monotonic;
 use smt160_driver::hal::stm32f1_dma::{Stm32F1DmaHal, validate_clocks};
 use smt160_driver::{Config, Ready, Smt160Driver, Smt160Status};
 use stm32f1xx_hal::{pac, prelude::*};
 
-#[app(device = pac, dispatchers = [SPI1])]
+#[app(device = pac, dispatchers = [USART1])]
 mod app {
     use super::*;
 
@@ -72,12 +72,14 @@ mod app {
 
         watchdog::spawn().ok();
 
+        defmt::info!("Returning from init");
         (Shared { driver }, Local {})
     }
 
     /// High-Priority DMA Task: Triggered on Half-Transfer or Transfer-Complete
     #[task(binds = DMA1_CHANNEL4, shared = [driver], priority = 2)]
     fn on_dma(mut cx: on_dma::Context) {
+        defmt::info!("DMA Interrupt Fired");
         cx.shared.driver.lock(|driver| {
             if let Some(temp) = driver.read_temperature() {
                 defmt::info!("Temperature: {} °C", temp.to_num::<f32>());
@@ -93,22 +95,24 @@ mod app {
     /// Background Watchdog Task: Monitors sensor health and performs auto-recovery
     #[task(shared = [driver], priority = 1)]
     async fn watchdog(mut cx: watchdog::Context) {
+        defmt::info!("Watchdog Task Started");
         loop {
             // Check sensor health every 10ms
             Mono::delay(10.millis()).await;
             defmt::info!("Watchdog Tick");
 
             cx.shared.driver.lock(|driver| {
+                // Diagnostic: Check if data is arriving
+                if let Some(temp) = driver.read_temperature() {
+                    defmt::info!("Watchdog Backup Read: {} °C", temp.to_num::<f32>());
+                }
+
                 if driver.status().contains(Smt160Status::SENSOR_TIMEOUT) {
-                    defmt::error!(
+                    defmt::info!(
                         "Sensor Flatline Detected! Attempting autonomous hardware recovery..."
                     );
                     // Re-initialize the HAL to reset hardware state
                     let _ = driver.reinit(72_000_000);
-                }
-
-                if driver.status().contains(Smt160Status::OUT_OF_BOUNDS) {
-                    defmt::error!("Signal Integrity Lost: Out of physical bounds.");
                 }
             });
         }
