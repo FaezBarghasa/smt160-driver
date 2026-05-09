@@ -74,3 +74,26 @@ fn test_invalid_signal() {
     assert!(result.is_none());
     assert!(driver.status().contains(Smt160Status::OUT_OF_BOUNDS));
 }
+
+#[test]
+fn test_reinit_resets_state() {
+    let hal = MockHal { next_data: RefCell::new(None) };
+    let mut driver = Smt160Driver::new(hal, Config::industrial())
+        .init(1000)
+        .unwrap();
+
+    // Set some state
+    *driver.hal_mut().next_data.borrow_mut() = Some(CapturedEdge { period_ticks: 1000, high_ticks: 437 });
+    driver.read_temperature();
+    
+    // Simulate some ticks and status
+    for _ in 0..1000 {
+        driver.read_temperature();
+    }
+    assert!(driver.status().contains(Smt160Status::SENSOR_TIMEOUT));
+    
+    // Re-init
+    driver.reinit(1000).unwrap();
+    
+    assert_eq!(driver.status().bits(), 0);
+}

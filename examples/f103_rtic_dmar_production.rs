@@ -55,7 +55,7 @@ mod app {
         let dma1 = cx.device.DMA1.split(&mut rcc);
         
         // TIM2_CH1 DMA request is on Channel 4
-        let hal = Stm32F1DmaHal::new(cx.device.TIM2, dma1.4, unsafe { &mut DMA_BUFFER });
+        let hal = Stm32F1DmaHal::new(cx.device.TIM2, dma1.4, unsafe { &mut *core::ptr::addr_of_mut!(DMA_BUFFER) });
         
         let driver = Smt160Driver::new(hal, Config::industrial())
             .init(clocks.pclk1().to_Hz())
@@ -95,7 +95,7 @@ mod app {
                 if driver.status().contains(Smt160Status::SENSOR_TIMEOUT) {
                     defmt::error!("Sensor Flatline Detected! Attempting autonomous hardware recovery...");
                     // Re-initialize the HAL to reset hardware state
-                    let _ = driver.init(36_000_000); 
+                    let _ = driver.reinit(36_000_000); 
                 }
                 
                 if driver.status().contains(Smt160Status::OUT_OF_BOUNDS) {

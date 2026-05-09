@@ -95,6 +95,19 @@ impl<H> Smt160Driver<H, Ready>
 where 
     H: Smt160Hal,
 {
+    /// Re-initializes the hardware and resets internal driver state.
+    ///
+    /// This is useful for autonomous recovery after a sensor timeout or signal loss.
+    pub fn reinit(&mut self, timer_freq: u32) -> Result<(), Smt160Error> {
+        self.hal.setup(timer_freq)?;
+        self.status = Smt160Status::empty();
+        self.watchdog_ticks = 0;
+        self.last_temp = None;
+        self.sample_count = 0;
+        self.last_period = 0;
+        Ok(())
+    }
+
     /// Polls the hardware for new data and returns the filtered temperature.
     ///
     /// This method performs:
