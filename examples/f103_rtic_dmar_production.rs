@@ -9,12 +9,9 @@ use rtic_monotonics::systick_monotonic;
 systick_monotonic!(Mono, 72_000_000);
 
 use rtic_monotonics::Monotonic;
-use smt160_driver::{Smt160Driver, Ready, Smt160Status, Config};
 use smt160_driver::hal::stm32f1_dma::{Stm32F1DmaHal, validate_clocks};
-use stm32f1xx_hal::{
-    pac,
-    prelude::*,
-};
+use smt160_driver::{Config, Ready, Smt160Driver, Smt160Status};
+use stm32f1xx_hal::{pac, prelude::*};
 
 #[app(device = pac, dispatchers = [SPI1])]
 mod app {
@@ -53,10 +50,12 @@ mod app {
         static mut DMA_BUFFER: [u32; 4] = [0; 4];
 
         let dma1 = cx.device.DMA1.split(&mut rcc);
-        
+
         // TIM2_CH1 DMA request is on Channel 4
-        let hal = Stm32F1DmaHal::new(cx.device.TIM2, dma1.4, unsafe { &mut *core::ptr::addr_of_mut!(DMA_BUFFER) });
-        
+        let hal = Stm32F1DmaHal::new(cx.device.TIM2, dma1.4, unsafe {
+            &mut *core::ptr::addr_of_mut!(DMA_BUFFER)
+        });
+
         let driver = Smt160Driver::new(hal, Config::industrial())
             .init(clocks.pclk1().to_Hz())
             .unwrap();
@@ -75,7 +74,7 @@ mod app {
         cx.shared.driver.lock(|driver| {
             if let Some(temp) = driver.read_temperature() {
                 defmt::info!("Temperature: {} °C", temp.to_num::<f32>());
-                
+
                 let status = driver.status();
                 if status.contains(Smt160Status::JITTER_DETECTED) {
                     defmt::warn!("Signal Jitter Detected! Check EMI/Wiring.");
@@ -90,14 +89,16 @@ mod app {
         loop {
             // Check sensor health every 10ms
             Mono::delay(10.millis()).await;
-            
+
             cx.shared.driver.lock(|driver| {
                 if driver.status().contains(Smt160Status::SENSOR_TIMEOUT) {
-                    defmt::error!("Sensor Flatline Detected! Attempting autonomous hardware recovery...");
+                    defmt::error!(
+                        "Sensor Flatline Detected! Attempting autonomous hardware recovery..."
+                    );
                     // Re-initialize the HAL to reset hardware state
-                    let _ = driver.reinit(36_000_000); 
+                    let _ = driver.reinit(36_000_000);
                 }
-                
+
                 if driver.status().contains(Smt160Status::OUT_OF_BOUNDS) {
                     defmt::error!("Signal Integrity Lost: Out of physical bounds.");
                 }

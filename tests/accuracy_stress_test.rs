@@ -1,3 +1,5 @@
+#![cfg(not(target_arch = "arm"))]
+
 use smt160_driver::hal::{Smt160Hal, CapturedEdge};
 use smt160_driver::error::Smt160Error;
 use smt160_driver::{Smt160Driver, Config, Smt160Status};
