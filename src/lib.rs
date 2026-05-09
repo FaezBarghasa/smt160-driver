@@ -124,6 +124,12 @@ where
         }
     }
 
+    /// Internal watchdog check called by user task.
+    pub fn check_watchdog(&mut self) -> Result<(), Smt160Error> {
+        let count = self.dma.get_remaining_transfers();
+        self.tick_watchdog(count)
+    }
+
     /// Watchdog called every 1ms to detect sensor flatline.
     pub fn tick_watchdog(&mut self, current_dma_count: u16) -> Result<(), Smt160Error> {
         if current_dma_count == self.last_dma_count {

@@ -48,6 +48,9 @@ pub trait Smt160DmaChannel {
     /// Checks if the Transfer Complete hardware flag is set.
     fn is_transfer_complete(&self) -> bool;
     /// Disables the DMA channel.
+    /// Returns the number of remaining data units in the current DMA transfer.
+    fn get_remaining_transfers(&self) -> u16;
+    /// Disables the DMA channel.
     fn disable(&self);
 }
 
@@ -148,6 +151,11 @@ macro_rules! impl_smt160_dma {
                     (dma1.isr().read().bits() >> ($offset * 4 + 1)) & 1 != 0
                 }
 
+                fn get_remaining_transfers(&self) -> u16 {
+                    let dma1 = unsafe { &*pac::DMA1::ptr() };
+                    dma1.$field().ndtr().read().ndt().bits()
+                }
+
                 fn disable(&self) {
                     let dma1 = unsafe { &*pac::DMA1::ptr() };
                     dma1.$field().cr().modify(|_, w| w.en().clear_bit());
@@ -157,4 +165,4 @@ macro_rules! impl_smt160_dma {
     }
 }
 
-impl_smt160_dma!(C1, ch1, 0, C5, ch5, 4, C6, ch6, 5);
+impl_smt160_dma!(C1, ch1, 0, C4, ch4, 3, C5, ch5, 4, C6, ch6, 5);

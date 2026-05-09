@@ -14,7 +14,7 @@ mod app {
 
     #[shared]
     struct Shared {
-        driver: Smt160<Ready, pac::TIM2, stm32f1xx_hal::dma::dma1::C5>,
+        driver: Smt160<Ready, pac::TIM2, stm32f1xx_hal::dma::dma1::C4>,
     }
 
     #[local]
@@ -35,21 +35,24 @@ mod app {
 
         let clocks = rcc.clocks;
 
+        // PA0 is TIM2_CH1 (TI1)
         let mut gpioa = cx.device.GPIOA.split(&mut rcc);
-        let _pin = gpioa.pa1.into_floating_input(&mut gpioa.crl);
+        let _pin = gpioa.pa0.into_floating_input(&mut gpioa.crl);
 
         static mut DMA_BUFFER: [u32; 4] = [0; 4];
         static mut SAMPLES: [I32F32; 1000] = [I32F32::ZERO; 1000];
 
         let dma1 = cx.device.DMA1.split(&mut rcc);
-        let driver = Smt160::new(cx.device.TIM2, dma1.5, unsafe { &mut DMA_BUFFER })
+        
+        // TIM2_CH1 DMA request is on Channel 4
+        let driver = Smt160::new(cx.device.TIM2, dma1.4, unsafe { &mut DMA_BUFFER })
             .init(&clocks)
             .unwrap();
 
         (Shared { driver }, Local { samples: unsafe { &mut SAMPLES }, current_idx: 0 })
     }
 
-    #[task(binds = DMA1_CHANNEL5, shared = [driver], local = [samples, current_idx])]
+    #[task(binds = DMA1_CHANNEL4, shared = [driver], local = [samples, current_idx])]
     fn on_dma(mut cx: on_dma::Context) {
         let samples = cx.local.samples;
         let idx = cx.local.current_idx;
