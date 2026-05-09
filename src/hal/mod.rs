@@ -13,6 +13,7 @@ pub mod stm32f1_dma;
 /// logic and the generic decoding algorithms.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[repr(C)]
 pub struct CapturedEdge {
     /// Total duration of the PWM cycle in timer ticks.
     pub period_ticks: u32,
@@ -38,4 +39,16 @@ pub trait Smt160Hal {
     /// This should be a non-blocking operation. It is recommended to use 
     /// `#[inline(always)]` on the implementation to minimize overhead.
     fn read_raw(&self) -> CapturedEdge;
+
+    /// Asynchronously waits for a new PWM cycle to be captured.
+    ///
+    /// This allows the driver to yield control while waiting for hardware 
+    /// DMA or interrupt events.
+    async fn wait_for_new_data(&mut self) -> Result<(), Smt160Error>;
+
+    /// Notifies the HAL that an interrupt has occurred.
+    ///
+    /// This should be called from the relevant interrupt handler (e.g., DMA TC/HT)
+    /// to wake any pending `wait_for_new_data` futures.
+    fn notify(&self);
 }

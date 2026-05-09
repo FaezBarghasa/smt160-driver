@@ -10,6 +10,7 @@ systick_monotonic!(Mono, 1_000);
 
 use rtic_monotonics::Monotonic;
 use smt160_driver::hal::stm32f1_dma::{Stm32F1DmaHal, validate_clocks};
+use smt160_driver::hal::Smt160Hal;
 use smt160_driver::{Config, Ready, Smt160Driver, Smt160Status};
 use stm32f1xx_hal::{pac, prelude::*};
 
@@ -51,7 +52,8 @@ mod app {
 
         // Circular DMA Buffer for CCR1 and CCR2 captures
         // Format: [CCR1_0, CCR2_0, CCR1_1, CCR2_1]
-        static mut DMA_BUFFER: [u32; 4] = [0; 4];
+        static mut DMA_BUFFER: smt160_driver::hal::stm32f1_dma::Smt160DmaBuffer = 
+            smt160_driver::hal::stm32f1_dma::Smt160DmaBuffer::new();
 
         let dma1 = cx.device.DMA1.split(&mut rcc);
         defmt::info!("DMA Initialized");
@@ -59,7 +61,7 @@ mod app {
         // TIM2_CH1 DMA request is on Channel 4
         let hal = Stm32F1DmaHal::new(cx.device.TIM2, dma1.4, unsafe {
             &mut *core::ptr::addr_of_mut!(DMA_BUFFER)
-        });
+        }, 1);
 
         let driver = Smt160Driver::new(hal, Config::industrial())
             .init(72_000_000)
@@ -79,15 +81,10 @@ mod app {
     /// High-Priority DMA Task: Triggered on Half-Transfer or Transfer-Complete
     #[task(binds = DMA1_CHANNEL4, shared = [driver], priority = 2)]
     fn on_dma(mut cx: on_dma::Context) {
-        defmt::info!("DMA Interrupt Fired");
         cx.shared.driver.lock(|driver| {
-            if let Some(temp) = driver.read_temperature() {
+            driver.hal_mut().notify();
+            if let Some(temp) = driver.read_temperature::<Mono>() {
                 defmt::info!("Temperature: {} °C", temp.to_num::<f32>());
-
-                let status = driver.status();
-                if status.contains(Smt160Status::JITTER_DETECTED) {
-                    defmt::warn!("Signal Jitter Detected! Check EMI/Wiring.");
-                }
             }
         });
     }
@@ -99,19 +96,12 @@ mod app {
         loop {
             // Check sensor health every 10ms
             Mono::delay(10.millis()).await;
-            defmt::info!("Watchdog Tick");
 
             cx.shared.driver.lock(|driver| {
-                // Diagnostic: Check if data is arriving
-                if let Some(temp) = driver.read_temperature() {
-                    defmt::info!("Watchdog Backup Read: {} °C", temp.to_num::<f32>());
-                }
-
                 if driver.status().contains(Smt160Status::SENSOR_TIMEOUT) {
                     defmt::info!(
                         "Sensor Flatline Detected! Attempting autonomous hardware recovery..."
                     );
-                    // Re-initialize the HAL to reset hardware state
                     let _ = driver.reinit(72_000_000);
                 }
             });

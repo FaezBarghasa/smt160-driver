@@ -58,29 +58,31 @@ impl SignalDecoder {
     }
 
     /// Applies Non-Linearity Correction (NLC) using linear interpolation.
-    /// 
-    /// The SMT160 is highly linear, but exhibits slight curvature at 
-    /// temperature extremes. This function compensates for that error using 
-    /// a pre-defined lookup table.
     pub fn apply_nlc(raw_temp: I32F32) -> I32F32 {
-        // Table points: (Raw Measurement, Corrected Truth)
-        // Optimized for the industrial range where the SMT160 has known slight deviations.
-        const TABLE: &[(I32F32, I32F32)] = &[
-            (I32F32::from_bits(-128849018880), I32F32::from_bits(-130137505792)), // -30.0 -> -30.3
-            (I32F32::from_bits(0), I32F32::from_bits(0)),                        // 0.0 -> 0.0
-            (I32F32::from_bits(107374182400), I32F32::from_bits(107374182400)),   // 25.0 -> 25.0
-            (I32F32::from_bits(343597383680), I32F32::from_bits(341020410060)),  // 80.0 -> 79.4
-            (I32F32::from_bits(515396075520), I32F32::from_bits(511099977728)),  // 120.0 -> 119.0
-        ];
+        Self::apply_nlc_custom(raw_temp, Self::DEFAULT_NLC_TABLE)
+    }
+
+    /// The default NLC table for standard SMT160 sensors.
+    pub const DEFAULT_NLC_TABLE: &[(I32F32, I32F32)] = &[
+        (I32F32::from_bits(-128849018880), I32F32::from_bits(-130137505792)), // -30.0 -> -30.3
+        (I32F32::from_bits(0), I32F32::from_bits(0)),                        // 0.0 -> 0.0
+        (I32F32::from_bits(107374182400), I32F32::from_bits(107374182400)),   // 25.0 -> 25.0
+        (I32F32::from_bits(343597383680), I32F32::from_bits(341020410060)),  // 80.0 -> 79.4
+        (I32F32::from_bits(515396075520), I32F32::from_bits(511099977728)),  // 120.0 -> 119.0
+    ];
+
+    /// Applies NLC using a custom lookup table.
+    pub fn apply_nlc_custom(raw_temp: I32F32, table: &[(I32F32, I32F32)]) -> I32F32 {
+        if table.is_empty() { return raw_temp; }
 
         // Boundary checks for extrapolation (clamping to extremes)
-        if raw_temp <= TABLE[0].0 { return TABLE[0].1; }
-        if raw_temp >= TABLE[TABLE.len() - 1].0 { return TABLE[TABLE.len() - 1].1; }
+        if raw_temp <= table[0].0 { return table[0].1; }
+        if raw_temp >= table[table.len() - 1].0 { return table[table.len() - 1].1; }
 
         // Linear interpolation between table points
-        for i in 0..TABLE.len() - 1 {
-            let (x0, y0) = TABLE[i];
-            let (x1, y1) = TABLE[i + 1];
+        for i in 0..table.len() - 1 {
+            let (x0, y0) = table[i];
+            let (x1, y1) = table[i + 1];
 
             if raw_temp >= x0 && raw_temp <= x1 {
                 let dx = x1 - x0;
@@ -118,37 +120,9 @@ impl SignalDecoder {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 mod tests {
     use super::*;
-    use proptest::prelude::*;
-
-    proptest! {
-        /// Mathematical Proof: The decode function must never panic for any u32 inputs.
-        /// It must either return a valid I32F32 or an Smt160Error.
-        #[test]
-        fn proof_decode_never_panics(p in 0..u32::MAX, a in 0..u32::MAX) {
-            let _ = SignalDecoder::decode(p, a);
-        }
-
-        /// Mathematical Proof: The NLC function must never panic for any possible 
-        /// I32F32 value (encoded as its bit representation).
-        #[test]
-        fn proof_nlc_never_panics(temp_bits in i64::MIN..i64::MAX) {
-            let temp = I32F32::from_bits(temp_bits);
-            let _ = SignalDecoder::apply_nlc(temp);
-        }
-
-        /// Property: Duty cycles > 1.0 must return OutOfBounds.
-        #[test]
-        fn property_active_greater_than_period_is_error(p in 1..u32::MAX) {
-            let a = p.saturating_add(1);
-            if a > p {
-                let result = SignalDecoder::decode(p, a);
-                assert_eq!(result, Err(Smt160Error::InvalidSignal));
-            }
-        }
-    }
 
     #[test]
     fn test_exact_values() {

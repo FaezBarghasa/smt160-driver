@@ -25,3 +25,42 @@ impl defmt::Format for Smt160Status {
     }
 }
 
+/// Diagnostic metrics for monitoring sensor health.
+///
+/// Uses Welford's online algorithm to calculate mean and standard deviation 
+/// of raw timer ticks with O(1) space and time.
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct Diagnostics {
+    pub mean_ticks: f32,
+    pub m2_ticks: f32,
+    pub count: u32,
+}
+
+impl Diagnostics {
+    pub fn new() -> Self {
+        Self { mean_ticks: 0.0, m2_ticks: 0.0, count: 0 }
+    }
+
+    /// Updates metrics with a new period measurement.
+    pub fn update(&mut self, ticks: u32) {
+        self.count = self.count.saturating_add(1);
+        let x = ticks as f32;
+        let delta = x - self.mean_ticks;
+        self.mean_ticks += delta / self.count as f32;
+        let delta2 = x - self.mean_ticks;
+        self.m2_ticks += delta * delta2;
+    }
+
+    /// Returns the standard deviation of captured ticks.
+    /// High variance often indicates EMI or connector failure.
+    pub fn std_dev(&self) -> f32 {
+        if self.count < 2 {
+            0.0
+        } else {
+            // Using libm for no_std sqrt
+            libm::sqrtf(self.m2_ticks / (self.count - 1) as f32)
+        }
+    }
+}
+
