@@ -11,27 +11,25 @@ Describes how the different crates and modules interact to form the full driver 
 graph TD
     subgraph "Application"
         App[User Firmware]
-        RTIC[RTIC/Async Task]
+        RTIC[RTIC Task]
     end
 
     subgraph "Driver Core (no_std)"
-        Lib[lib.rs: Driver]
-        Dec[decoder.rs: Logic]
-        Math[math.rs: Math]
-        Types[types.rs: Types]
+        Lib[lib.rs: Smt160Driver]
+        Math[math.rs: Fixed-Point Core]
+        Types[types.rs: Typestate]
     end
 
     subgraph "Hardware (HAL)"
-        Trait[CaptureDevice Trait]
-        HW[Timer Peripheral]
+        Trait[Smt160Hal Trait]
+        HW[Timer/DMA Peripheral]
     end
 
     App --> Lib
     RTIC --> Lib
-    Lib --> Dec
     Lib --> Trait
-    Dec --> Math
-    Dec --> Types
+    Lib --> Math
+    Lib --> Types
     Trait --> HW
 ```
 
@@ -46,22 +44,19 @@ Illustrates the sequence of events from a physical edge on the pin to a filtered
 sequenceDiagram
     participant S as SMT160 Sensor
     participant T as Timer HW
-    participant C as CaptureDevice
-    participant D as Smt160Decoder
-    participant F as EWMA Filter
+    participant C as Smt160Hal
+    participant D as Smt160Driver
+    participant M as SignalDecoder
     participant A as Application
 
     S->>T: Rising Edge
-    T->>C: Trigger CC1 Capture
-    S->>T: Falling Edge
-    T->>C: Trigger CC2 Capture
-    S->>T: Next Rising Edge
-    T->>C: Trigger CC1 Capture
-    C->>D: push_edge_timestamp()
-    D->>D: Calculate Duty Cycle
-    D->>F: apply_ewma_filter()
-    F-->>D: Filtered Temperature
-    D-->>A: Result<Reading, Error>
+    T->>C: Capture period & high
+    C->>D: read_raw() -> CapturedEdge
+    D->>M: decode(period, high)
+    M-->>D: Raw Temperature
+    D->>M: apply_adaptive_filter()
+    M-->>D: Filtered Temperature
+    D-->>A: Result<I32F32, Error>
 ```
 
 ---

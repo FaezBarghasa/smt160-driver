@@ -27,8 +27,8 @@ We implement an Exponentially Weighted Moving Average (EWMA) filter with dynamic
 
 $$Y_n = \alpha X_n + (1 - \alpha) Y_{n-1}$$
 
-- **Fast Tracking ($\alpha=0.8$)**: Used during startup (first 16 samples) or when a large temperature jump ($>5°C$) is detected.
-- **Noise Rejection ($\alpha=0.1$)**: Used during steady-state operation to suppress high-frequency thermal noise and quantization jitter.
+- **Fast Tracking (α=0.8)**: Triggered during startup (first 16 samples) or when a large temperature jump ($>5°C$) is detected.
+- **Steady State (α=0.1)**: Used during steady-state operation to suppress high-frequency thermal noise and quantization jitter.
 
 ---
 
@@ -54,15 +54,15 @@ $$\Delta T = \frac{1}{0.0047 \times f_{clk} \times T_{period}}$$
 ### MISRA-C & IEC 62304 Alignment
 - **Fixed-Point Arithmetic**: Prevents the use of non-deterministic floating-point hardware.
 - **Boundary Checks**: All intermediate calculations for $D$ are validated against the physical limits $[0.320, 0.980]$.
-- **Fail-Safe Status**: The driver provides a bit-flagged status for every reading, allowing the control loop to fall back to a safe state if `SIGNAL_LOSS` or `FREQUENCY_ERROR` is detected.
+- **Fail-Safe Status**: The driver provides a bit-flagged `Smt160Status` for every reading, allowing the control loop to fall back to a safe state if `SENSOR_TIMEOUT` or `OUT_OF_BOUNDS` is detected.
 
 ---
 
-## 📊 Error Handling Taxonomy
+## 📊 Status & Error Taxonomy
 
-| Error Variant | Root Cause | System Response |
+| Flag / Error | Root Cause | System Response |
 | :--- | :--- | :--- |
-| `Timeout` | No edges detected for 100ms | Fail reading; maintain last valid state. |
-| `InvalidDutyCycle` | Measured $D < 0.32$ or $D > 0.98$ | Flag `BOUNDARY_VIOLATION`. |
-| `ThermalOverload` | Calculated $T > 130°C$ | Flag `OUT_OF_BOUNDS`. |
-| `FrequencyOutOfRange` | Pulse train $< 500Hz$ or $> 5kHz$ | Flag `FREQUENCY_ERROR`. |
+| `SENSOR_TIMEOUT` | No data available within watchdog period | Fail reading; trigger autonomous recovery. |
+| `OUT_OF_BOUNDS` | Measured $D < 0.32$ or $D > 0.98$ | Flag signal integrity loss. |
+| `JITTER_DETECTED` | Period variation > 0.5% (Configurable) | Warn of EMI or unstable clock source. |
+| `InvalidSignal` | Logical error (e.g., active > period) | Drop sample; maintain filter state. |

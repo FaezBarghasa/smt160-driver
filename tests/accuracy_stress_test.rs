@@ -49,7 +49,7 @@ fn test_adaptive_filtering() {
 
     // Sample 1: 25°C
     *driver.hal_mut().next_data.borrow_mut() = Some(CapturedEdge { period_ticks: 1000, high_ticks: 437 });
-    let temp1 = driver.read_temperature().unwrap();
+    let _temp1 = driver.read_temperature().unwrap();
     
     // Sample 2: Sudden jump to 35°C (> 5°C deviation, should use alpha=0.8)
     // DC for 35°C: T = (DC - 0.320) / 0.0047 -> 35 * 0.0047 + 0.320 = 0.4845
@@ -57,7 +57,6 @@ fn test_adaptive_filtering() {
     let temp2 = driver.read_temperature().unwrap();
     
     // Expected: 25 + 0.8 * (35 - 25) = 33
-    println!("Temp1: {}, Temp2: {}", temp1.to_num::<f32>(), temp2.to_num::<f32>());
     assert!(temp2 > I32F32::from_num(32) && temp2 < I32F32::from_num(34));
 }
 

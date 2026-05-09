@@ -1,6 +1,6 @@
 # ⚡ RTIC 2.1 Integration Guide for SMT160-Driver
 
-This guide details how to integrate the `smt160-driver` into a project using **Real-Time Interrupt-driven Concurrency (RTIC) 2.1**. This approach ensures the highest possible precision by utilizing hardware interrupts for edge capture while keeping processing non-blocking.
+This guide details how to integrate the `smt160-driver` into an RTIC 2.1 project using the **DMA-based Hardware Abstraction Layer**. This approach ensures zero-jitter capture by utilizing hardware DMA to transfer pulse-width values directly to memory, bypassing the CPU for timing-critical tasks.
 
 ## 📦 Prerequisites
 
@@ -16,8 +16,8 @@ rtic-monotonics = { version = "0.1", features = ["systick"] }
 ## 🏗️ Architectural Overview
 
 In an RTIC application, the driver is typically split across:
-1.  **Hardware Task**: High-priority interrupt handler for capturing timer events.
-2.  **Application Task**: Lower-priority task for processing temperature readings and updating system state.
+1.  **DMA Interrupt Task**: High-priority task triggered when new data is captured by DMA.
+2.  **Health/Watchdog Task**: Lower-priority task for monitoring sensor status and performing auto-recovery.
 
 ---
 
@@ -25,85 +25,77 @@ In an RTIC application, the driver is typically split across:
 
 ### 1. Resource Definition
 
-Define your shared and local resources in the RTIC `#[app]` module.
-
 ```rust
 #[rtic::app(device = stm32f1xx_hal::pac, dispatchers = [USART1])]
 mod app {
-    use smt160_driver::platform::stm32f1::Stm32F1Capture;
-    use smt160_driver::Smt160Driver;
-    use smt160_driver::config::StaticConfiguration;
+    use smt160_driver::hal::stm32f1_dma::Stm32F1DmaHal;
+    use smt160_driver::{Smt160Driver, Ready, Config};
 
     #[shared]
     struct Shared {
-        // Share the driver or just the resulting readings
-        latest_reading: Option<smt160_driver::Reading>,
+        // The driver is generic over the HAL implementation
+        driver: Smt160Driver<Stm32F1DmaHal<pac::TIM2, stm32f1xx_hal::dma::dma1::C4>, Ready>,
     }
 
     #[local]
-    struct Local {
-        smt160: Smt160Driver<StaticConfiguration, Stm32F1Capture>,
-    }
-
-    // ... init and tasks ...
+    struct Local {}
 }
 ```
 
 ### 2. Initialization
 
-Configure the timer and the driver during the `init` phase.
-
 ```rust
 #[init]
 fn init(cx: init::Context) -> (Shared, Local) {
-    let mut flash = cx.device.FLASH;
-    let rcc = cx.device.RCC.constrain();
-    let clocks = rcc.cfgr.freeze(&mut flash.acr);
+    // ... Clock configuration (e.g., 72MHz) ...
 
-    // Initialize Timer for PWM Input Capture (TIM2)
-    let capture = Stm32F1Capture::new(cx.device.TIM2);
+    // 1. Static DMA Buffer for circular capture
+    static mut DMA_BUFFER: [u32; 4] = [0; 4];
 
-    // Initialize SMT160 Driver (72MHz clock for STM32F1)
-    let smt160 = Smt160Driver::new(StaticConfiguration, capture, 72);
+    // 2. Initialize DMA and Timer
+    let dma1 = cx.device.DMA1.split(&mut rcc);
+    let hal = Stm32F1DmaHal::new(cx.device.TIM2, dma1.4, unsafe { &mut DMA_BUFFER });
 
-    (
-        Shared { latest_reading: None },
-        Local { smt160 },
-    )
+    // 3. Create and Initialize Driver
+    let driver = Smt160Driver::new(hal, Config::industrial())
+        .init(72_000_000)
+        .expect("Hardware init failed");
+
+    (Shared { driver }, Local {})
 }
 ```
 
-### 3. Handling Timer Overflows (Critical for Precision)
+### 3. Handling DMA Interrupts
 
-The `Stm32F1Capture` requires consistent 64-bit timestamps. You must handle the timer update interrupt.
-
-```rust
-#[task(binds = TIM2, priority = 7, local = [])]
-fn timer_handler(_cx: timer_handler::Context) {
-    // Notify the driver of a timer overflow to stitch 64-bit timestamps
-    Stm32F1Capture::handle_timer_overflow_interrupt();
-}
-```
-
-### 4. Processing Sensor Data
-
-Use a background task to poll the driver asynchronously.
+The DMA interrupt is triggered when the buffer is half-full or full, ensuring we always process the latest coherent capture.
 
 ```rust
-#[task(priority = 1, local = [smt160], shared = [latest_reading])]
-async fn sensor_task(mut cx: sensor_task::Context) {
-    loop {
-        // Non-blocking wait for a new PWM cycle
-        match cx.local.smt160.read_temperature_celsius().await {
-            Ok(reading) => {
-                cx.shared.latest_reading.lock(|r| *r = Some(reading));
-                // Handle logic based on temperature
-            }
-            Err(e) => {
-                // Log diagnostic health or handle fault
-                let health = cx.local.smt160.get_diagnostic_health();
-            }
+#[task(binds = DMA1_CHANNEL4, shared = [driver], priority = 2)]
+fn on_dma(mut cx: on_dma::Context) {
+    cx.shared.driver.lock(|driver| {
+        if let Some(temperature) = driver.read_temperature() {
+            // temperature is a fixed-point I32F32
+            defmt::info!("Temp: {} °C", temperature.to_num::<f32>());
         }
+    });
+}
+```
+
+### 4. Background Health Monitoring
+
+```rust
+#[task(shared = [driver], priority = 1)]
+async fn watchdog(mut cx: watchdog::Context) {
+    loop {
+        Mono::delay(100.millis()).await;
+        
+        cx.shared.driver.lock(|driver| {
+            let status = driver.status();
+            if status.contains(Smt160Status::SENSOR_TIMEOUT) {
+                // Perform autonomous recovery
+                let _ = driver.init(72_000_000);
+            }
+        });
     }
 }
 ```
@@ -112,27 +104,27 @@ async fn sensor_task(mut cx: sensor_task::Context) {
 
 ## 🛡️ Best Practices for RTIC
 
--   **Priority Assignment**: The timer interrupt should have a higher priority than the processing task to ensure no edges are missed.
--   **Locking**: Keep shared resource locks (like `latest_reading`) as short as possible to avoid jitter in other real-time tasks.
--   **Static Configuration**: In most industrial cases, use `StaticConfiguration` to save memory and avoid runtime lookup overhead.
-
-> [!IMPORTANT]
-> **Clock Synchronization**: Ensure the frequency passed to `Smt160Driver::new` (e.g., `72`) exactly matches the peripheral clock frequency of the timer used for capture.
+-   **Priority Assignment**: The DMA interrupt should have a medium-to-high priority (e.g., 2 or 3) to ensure timely processing of the buffer.
+-   **Lock Duration**: Keep the `driver` lock short. The `read_temperature()` call is highly optimized and non-blocking.
+-   **Memory Safety**: Always use a `static mut` buffer for DMA to ensure the memory is valid for the duration of the application.
 
 ---
 
-## 📊 Sequence Diagram: RTIC Flow
+## 📊 Sequence Diagram: DMA Flow
 
 ```mermaid
 sequenceDiagram
-    participant HW as TIM2 Hardware
-    participant ISR as TIM2 Interrupt (Priority 7)
-    participant DRV as Smt160Driver
-    participant TASK as Sensor Task (Priority 1)
+    participant S as SMT160 Sensor
+    participant H as TIM2/DMA Hardware
+    participant I as DMA Interrupt (Priority 2)
+    participant D as Smt160Driver
+    participant A as Application
 
-    HW->>ISR: Timer Overflow
-    ISR->>DRV: Increment Overflow Counter
-    HW->>DRV: PWM Edge Captured (Hardware)
-    TASK->>DRV: read_temperature_celsius().await
-    DRV->>TASK: Return Filtered Reading
+    S->>H: PWM Pulse
+    H->>H: Auto-Capture to DMA Buffer
+    H->>I: DMA Transfer Complete
+    I->>D: read_temperature()
+    D->>D: Decode DMA Buffer
+    D->>D: Apply Adaptive Filter
+    D-->>A: Temperature Value
 ```

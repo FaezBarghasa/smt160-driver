@@ -43,10 +43,10 @@ $$T = \frac{\frac{T_a}{T_p} - 0.320}{0.00470}$$
 ## ✨ Key Features
 
 - **🎯 Industrial Precision**: Targeted 0.05°C accuracy with support for high-resolution timers (up to 72MHz).
-- **📉 Piecewise Calibration**: Integrated support for multi-point linear interpolation to correct sensor non-linearity.
-- **🛡️ Safety Guards**: Automatic boundary validation (0.320-0.980 Duty Cycle) and frequency drift monitoring (500Hz - 5kHz).
-- **⚡ Async Native**: Zero-overhead support for `embedded-hal-async` and multi-tasking RTOS environments (e.g., RTIC).
-- **📊 Observability**: Real-time health metrics including jitter RMS, frequency stability tracking, and bit-flagged status reporting.
+- **📉 Adaptive EWMA Filtering**: Real-time noise rejection that automatically adjusts responsiveness based on thermal transients (α=0.1 to 0.8).
+- **🛡️ Safety Guards**: Automatic boundary validation and jitter detection.
+- **⚡ Trait-Injected HAL**: Hardware-agnostic design; implement `Smt160Hal` for any MCU (STM32F1 supported out-of-box).
+- **📊 Observability**: Real-time status reporting via bit-flags (Jitter, Timeout, Out-of-Bounds).
 
 ---
 
@@ -59,29 +59,27 @@ Add the following to your `Cargo.toml`:
 ```toml
 [dependencies]
 smt160-driver = "0.1.0"
-fixed = { version = "1.27.0", features = ["az"] }
+fixed = "1.27.0"
 ```
 
-### High-Precision Usage (Async/RTIC)
+### Usage (e.g., STM32F103 with DMA)
 
 ```rust
-use smt160_driver::{Smt160Driver, Reading};
-use smt160_driver::config::StaticConfiguration;
+use smt160_driver::{Smt160Driver, Config};
+use smt160_driver::hal::stm32f1_dma::Stm32F1DmaHal;
 
-// 1. Initialize the driver with hardware-specific capture (e.g., STM32)
-let mut sensor = Smt160Driver::new(
-    StaticConfiguration, 
-    stm32_capture_device, 
-    72 // Timer clock in MHz for high-resolution edge detection
-);
+// 1. Initialize the Hardware Adapter
+let hal = Stm32F1DmaHal::new(tim2, dma1_ch7);
 
-// 2. Perform a non-blocking high-precision reading
-match sensor.read_temperature_celsius().await {
-    Ok(reading) => {
-        let temp_f32: f32 = reading.temperature_celsius.to_num();
-        println!("Temperature: {:.3} °C | Status: {:?}", temp_f32, reading.status);
-    }
-    Err(e) => eprintln!("Hardware System Fault: {}", e),
+// 2. Create the driver and initialize hardware
+let mut driver = Smt160Driver::new(hal, Config::industrial())
+    .init(72_000_000) // Clock frequency in Hz
+    .expect("Hardware init failed");
+
+// 3. Read temperature (non-blocking polling)
+if let Some(temperature) = driver.read_temperature() {
+    let temp_f32: f32 = temperature.to_num();
+    println!("Temperature: {:.3} °C | Status: {:?}", temp_f32, driver.status());
 }
 ```
 
