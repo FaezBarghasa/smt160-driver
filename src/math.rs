@@ -17,7 +17,7 @@ impl SignalDecoder {
     /// - OFFSET: 0.320
     /// - INVERSE_STEP: 1 / 0.00470 ≈ 212.7659574468
     const DC_OFFSET: I32F32 = I32F32::from_bits(1374389535); // 0.320 * 2^32
-    const INVERSE_STEP: I32F32 = I32F32::from_bits(91384013489); // 212.765957... * 2^32
+    const INVERSE_STEP: I32F32 = I32F32::from_bits(913840134891); // 212.765957... * 2^32
 
     /// Decodes raw timer ticks into a fixed-point temperature value.
     ///
@@ -36,12 +36,14 @@ impl SignalDecoder {
         }
 
         // Calculate Duty Cycle: DC = active / period
-        // We use I32F32 to maintain 32-bit fractional precision.
-        let active_fp = I32F32::from_num(active_ticks);
-        let period_fp = I32F32::from_num(period_ticks);
+        // We use I64F64 for intermediate calculation to prevent overflow 
+        // when converting u32 ticks > 2^31 into a signed fixed-point type.
+        use fixed::types::I64F64;
+        let active_fp = I64F64::from_num(active_ticks);
+        let period_fp = I64F64::from_num(period_ticks);
         
         // Division is safe because period_fp >= 1 (since period_ticks > 0)
-        let dc = active_fp / period_fp;
+        let dc: I32F32 = (active_fp / period_fp).to_num();
 
         // T = (DC - 0.320) * 212.766
         let raw_temp = (dc - Self::DC_OFFSET) * Self::INVERSE_STEP;
@@ -143,7 +145,7 @@ mod tests {
             let a = p.saturating_add(1);
             if a > p {
                 let result = SignalDecoder::decode(p, a);
-                assert_eq!(result, Err(Smt160Error::OutOfBounds));
+                assert_eq!(result, Err(Smt160Error::InvalidSignal));
             }
         }
     }

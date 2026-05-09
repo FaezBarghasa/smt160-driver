@@ -18,7 +18,7 @@ pub use telemetry::Smt160Status;
 
 use fixed::types::I32F32;
 use core::marker::PhantomData;
-use crate::hal::{Smt160Hal, CapturedEdge};
+use crate::hal::Smt160Hal;
 
 /// Configuration for the SMT160 driver, allowing tuning for different environments.
 #[derive(Debug, Clone, Copy)]
