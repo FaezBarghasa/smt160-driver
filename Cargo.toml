@@ -1,6 +1,6 @@
 [package]
 name = "smt160-driver"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2024"
 authors = ["Faez Barghasa <faez.barghasa@gmail.com>"]
 description = "High-precision, zero-jitter async driver for SMT160 sensors on STM32"
@@ -20,6 +20,7 @@ embassy-sync = { version = "0.6", features = ["defmt"] }
 rtic-monotonics = { version = "2.1", features = ["cortex-m-systick"] }
 stm32f1xx-hal = { version = "0.10.0", features = ["rt", "stm32f103"], optional = true }
 serde = { version = "1.0", default-features = false, features = ["derive"], optional = true }
+critical-section = { version = "1.1", features = ["restore-state-u16"] }
 
 [dev-dependencies]
 rtic = { version = "2.1", features = ["thumbv7-backend"] }

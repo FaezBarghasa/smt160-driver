@@ -4,15 +4,18 @@
 use defmt_rtt as _;
 use panic_probe as _;
 use rtic::app;
+use rtic_monotonics::systick_monotonic;
+
+systick_monotonic!(Mono, 1_000);
+
 #[app(device = pac, dispatchers = [USART1])]
 mod app {
     use stm32f1xx_hal::{pac, prelude::*};
     use smt160_driver::hal::stm32f1_dma::{Stm32F1DmaHal, validate_clocks};
     use smt160_driver::hal::Smt160Hal;
     use smt160_driver::{Config, Ready, Smt160Driver, Smt160Status};
-    use rtic_monotonics::systick_monotonic;
     use rtic_monotonics::Monotonic;
-    systick_monotonic!(Mono, 1_000);
+    use super::Mono;
 
     #[shared]
     struct Shared {
@@ -93,8 +96,13 @@ mod app {
         loop {
             // Check sensor health every 10ms
             Mono::delay(10.millis()).await;
+            defmt::info!("Watchdog Tick");
 
             cx.shared.driver.lock(|driver| {
+                if let Some(temp) = driver.read_temperature::<Mono>() {
+                    defmt::info!("Watchdog Backup Read: {} °C", temp.to_num::<f32>());
+                }
+
                 if driver.status().contains(Smt160Status::SENSOR_TIMEOUT) {
                     defmt::info!(
                         "Sensor Flatline Detected! Attempting autonomous hardware recovery..."

@@ -135,3 +135,25 @@ mod tests {
         assert!(res.abs_diff(I32F32::from_num(25)) < I32F32::from_num(0.001));
     }
 }
+
+#[cfg(all(kani, feature = "std"))]
+mod verification {
+    use super::*;
+
+    #[kani::proof]
+    fn verify_decode_no_panic() {
+        let period: u32 = kani::any();
+        let active: u32 = kani::any();
+        // The decoder should never panic, regardless of input
+        let _ = SignalDecoder::decode(period, active);
+    }
+
+    #[kani::proof]
+    fn verify_nlc_bounds() {
+        let temp: I32F32 = I32F32::from_bits(kani::any());
+        let corrected = SignalDecoder::apply_nlc(temp);
+        // Corrected temp must be within reasonable physical bounds if input was
+        kani::assert(corrected >= I32F32::from_num(-50), "NLC underflow");
+        kani::assert(corrected <= I32F32::from_num(150), "NLC overflow");
+    }
+}

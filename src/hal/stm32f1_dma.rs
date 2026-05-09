@@ -107,7 +107,12 @@ where
 
     #[inline(always)]
     fn is_new_data_available(&self) -> bool {
-        self.dma.is_half_transfer() || self.dma.is_transfer_complete()
+        let ht = self.dma.is_half_transfer();
+        let tc = self.dma.is_transfer_complete();
+        if ht || tc {
+            defmt::info!("DMA Data: HT={}, TC={}", ht, tc);
+        }
+        ht || tc
     }
 
     #[inline(always)]
@@ -239,21 +244,24 @@ macro_rules! impl_smt160_timer {
     };
 }
 
+impl_smt160_timer!(TIM1);
 impl_smt160_timer!(TIM2);
 impl_smt160_timer!(TIM3);
 impl_smt160_timer!(TIM4);
+impl_smt160_timer!(TIM5);
+impl_smt160_timer!(TIM8);
 
 // ============================================================================
 // DMA MACRO
 // ============================================================================
 
 macro_rules! impl_smt160_dma {
-    ($($CH:ident, $field:ident, $offset:expr),+) => {
+    ($HAL_MOD:ident, $PAC_PERIPH:ident, $($CH:ident, $field:ident, $offset:expr),+) => {
         $(
-            impl Smt160DmaChannel for stm32f1xx_hal::dma::dma1::$CH {
+            impl Smt160DmaChannel for stm32f1xx_hal::dma::$HAL_MOD::$CH {
                 unsafe fn setup_circular_capture(&self, peripheral_addr: u32, memory_addr: *mut u32, len: u16) {
-                    let dma1 = unsafe { &*pac::DMA1::ptr() };
-                    let ch = &dma1.$field;
+                    let dma = unsafe { &*pac::$PAC_PERIPH::ptr() };
+                    let ch = &dma.$field;
 
                     // Disable before configuration
                     ch.cr.modify(|_, w| w.en().clear_bit());
@@ -275,27 +283,31 @@ macro_rules! impl_smt160_dma {
                 }
 
                 fn clear_interrupt_flags(&self) {
-                    let dma1 = unsafe { &*pac::DMA1::ptr() };
-                    dma1.ifcr.write(|w| unsafe { w.bits(0xF << ($offset * 4)) });
+                    let dma = unsafe { &*pac::$PAC_PERIPH::ptr() };
+                    dma.ifcr.write(|w| unsafe { w.bits(0xF << ($offset * 4)) });
                 }
 
                 fn is_half_transfer(&self) -> bool {
-                    let dma1 = unsafe { &*pac::DMA1::ptr() };
-                    (dma1.isr.read().bits() >> ($offset * 4 + 2)) & 1 != 0
+                    let dma = unsafe { &*pac::$PAC_PERIPH::ptr() };
+                    (dma.isr.read().bits() >> ($offset * 4 + 2)) & 1 != 0
                 }
 
                 fn is_transfer_complete(&self) -> bool {
-                    let dma1 = unsafe { &*pac::DMA1::ptr() };
-                    (dma1.isr.read().bits() >> ($offset * 4 + 1)) & 1 != 0
+                    let dma = unsafe { &*pac::$PAC_PERIPH::ptr() };
+                    (dma.isr.read().bits() >> ($offset * 4 + 1)) & 1 != 0
                 }
 
                 fn disable(&self) {
-                    let dma1 = unsafe { &*pac::DMA1::ptr() };
-                    dma1.$field.cr.modify(|_, w| w.en().clear_bit());
+                    let dma = unsafe { &*pac::$PAC_PERIPH::ptr() };
+                    dma.$field.cr.modify(|_, w| w.en().clear_bit());
                 }
             }
         )+
     }
 }
 
-impl_smt160_dma!(C1, ch1, 0, C4, ch4, 3, C5, ch5, 4, C6, ch6, 5);
+impl_smt160_dma!(dma1, DMA1, C1, ch1, 0, C2, ch2, 1, C3, ch3, 2, C4, ch4, 3, C5, ch5, 4, C6, ch6, 5, C7, ch7, 6);
+
+// Support DMA2 for High-density devices (TIM5, TIM8, etc.)
+#[cfg(feature = "high")]
+impl_smt160_dma!(dma2, DMA2, C1, ch1, 0, C2, ch2, 1, C3, ch3, 2, C4, ch4, 3, C5, ch5, 4);
