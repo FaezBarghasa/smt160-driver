@@ -9,7 +9,8 @@ use rtic_monotonics::systick_monotonic;
 systick_monotonic!(Mono, 72_000_000);
 
 use rtic_monotonics::Monotonic;
-use smt160_driver::{Smt160, Ready, Smt160Status};
+use smt160_driver::{Smt160Driver, Ready, Smt160Status, Config};
+use smt160_driver::hal::stm32f1_dma::{Stm32F1DmaHal, validate_clocks};
 use stm32f1xx_hal::{
     pac,
     prelude::*,
@@ -21,7 +22,7 @@ mod app {
 
     #[shared]
     struct Shared {
-        driver: Smt160<Ready, pac::TIM2, stm32f1xx_hal::dma::dma1::C4>,
+        driver: Smt160Driver<Stm32F1DmaHal<pac::TIM2, stm32f1xx_hal::dma::dma1::C4>, Ready>,
     }
 
     #[local]
@@ -38,6 +39,8 @@ mod app {
         );
 
         let clocks = rcc.clocks;
+        validate_clocks(&clocks).expect("Clock validation failed: APB1 must be >= 8MHz");
+
         defmt::info!("SMT160 Production Driver Initializing...");
         defmt::info!("System Clock: {} Hz", clocks.sysclk().to_Hz());
 
@@ -52,9 +55,11 @@ mod app {
         let dma1 = cx.device.DMA1.split(&mut rcc);
         
         // TIM2_CH1 DMA request is on Channel 4
-        let driver = Smt160::new(cx.device.TIM2, dma1.4, unsafe { &mut DMA_BUFFER })
-            .init(&clocks)
-            .expect("Clock validation failed: APB1 must be >= 8MHz");
+        let hal = Stm32F1DmaHal::new(cx.device.TIM2, dma1.4, unsafe { &mut DMA_BUFFER });
+        
+        let driver = Smt160Driver::new(hal, Config::industrial())
+            .init(clocks.pclk1().to_Hz())
+            .unwrap();
 
         // Initialize Systick for 1ms resolution watchdog (72MHz)
         Mono::start(cx.core.SYST, 72_000_000);
@@ -68,10 +73,10 @@ mod app {
     #[task(binds = DMA1_CHANNEL4, shared = [driver], priority = 2)]
     fn on_dma(mut cx: on_dma::Context) {
         cx.shared.driver.lock(|driver| {
-            if let Some(temp) = driver.poll_dma() {
+            if let Some(temp) = driver.read_temperature() {
                 defmt::info!("Temperature: {} °C", temp.to_num::<f32>());
                 
-                let status = driver.status;
+                let status = driver.status();
                 if status.contains(Smt160Status::JITTER_DETECTED) {
                     defmt::warn!("Signal Jitter Detected! Check EMI/Wiring.");
                 }
@@ -87,12 +92,13 @@ mod app {
             Mono::delay(10.millis()).await;
             
             cx.shared.driver.lock(|driver| {
-                if let Err(_) = driver.check_watchdog() {
+                if driver.status().contains(Smt160Status::SENSOR_TIMEOUT) {
                     defmt::error!("Sensor Flatline Detected! Attempting autonomous hardware recovery...");
-                    driver.hard_reset();
+                    // Re-initialize the HAL to reset hardware state
+                    let _ = driver.init(36_000_000); 
                 }
                 
-                if driver.status.contains(Smt160Status::OUT_OF_BOUNDS) {
+                if driver.status().contains(Smt160Status::OUT_OF_BOUNDS) {
                     defmt::error!("Signal Integrity Lost: Out of physical bounds.");
                 }
             });

@@ -32,7 +32,7 @@ impl SignalDecoder {
 
         // Physical impossibility: active time cannot exceed total period
         if active_ticks > period_ticks {
-            return Err(Smt160Error::OutOfBounds);
+            return Err(Smt160Error::InvalidSignal);
         }
 
         // Calculate Duty Cycle: DC = active / period
@@ -89,6 +89,30 @@ impl SignalDecoder {
         }
 
         raw_temp
+    }
+
+    /// Applies an adaptive EWMA filter based on temperature deviation and startup state.
+    /// 
+    /// # Alpha Selection Logic
+    /// - **Fast Track (α=0.8)**: Used if deviation > 5°C or during the first 16 samples. 
+    ///   Ensures rapid response to thermal events or system startup.
+    /// - **Steady State (α=0.1)**: Used for high-precision noise rejection once stabilized.
+    pub fn apply_adaptive_filter(current: I32F32, last: Option<I32F32>, count: u32) -> I32F32 {
+        let last_val = match last {
+            Some(v) => v,
+            None => return current,
+        };
+
+        let diff = (current - last_val).abs();
+        let alpha = if diff > I32F32::from_num(5) || count < 16 {
+            I32F32::from_num(0.8)
+        } else {
+            I32F32::from_num(0.1)
+        };
+
+        // Y_n = alpha * X_n + (1 - alpha) * Y_{n-1}
+        let one_minus_alpha = I32F32::from_num(1) - alpha;
+        (alpha * current) + (one_minus_alpha * last_val)
     }
 }
 

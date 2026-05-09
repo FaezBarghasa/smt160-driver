@@ -29,6 +29,9 @@ pub enum Smt160Error {
     /// (e.g., outside the -45°C to +130°C range). This can also occur 
     /// if the signal is extremely noisy (jitter exceeding correction limits).
     OutOfBounds,
+
+    /// The PWM signal is logically invalid (e.g., active time > period).
+    InvalidSignal,
 }
 
 impl fmt::Display for Smt160Error {
@@ -38,6 +41,7 @@ impl fmt::Display for Smt160Error {
             Self::InvalidBuffer => write!(f, "Invalid DMA buffer configuration"),
             Self::SensorTimeout => write!(f, "Sensor pulse timeout (disconnected or ESD freeze)"),
             Self::OutOfBounds => write!(f, "Measurement out of bounds or signal corrupted"),
+            Self::InvalidSignal => write!(f, "PWM signal logically invalid (active > period)"),
         }
     }
 }

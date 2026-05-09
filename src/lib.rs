@@ -18,151 +18,156 @@ pub use telemetry::Smt160Status;
 
 use fixed::types::I32F32;
 use core::marker::PhantomData;
-use crate::hal::{Smt160TimerInstance, Smt160DmaChannel};
+use crate::hal::{Smt160Hal, CapturedEdge};
 
-/// The industrial-grade SMT160 driver using DMA Burst.
-pub struct Smt160<State, TIM, DMA> {
-    _state: PhantomData<State>,
-    pub(crate) timer: TIM,
-    pub(crate) dma: DMA,
-    buffer: &'static mut [u32; 4],
+/// Configuration for the SMT160 driver, allowing tuning for different environments.
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct Config {
+    /// Jitter tolerance as a percentage (e.g., 0.005 for 0.5%).
+    pub jitter_threshold_pct: I32F32,
+}
+
+impl Config {
+    /// Recommended settings for industrial environments (low noise tolerance).
+    pub fn industrial() -> Self {
+        Self {
+            jitter_threshold_pct: I32F32::from_num(0.005),
+        }
+    }
+
+    /// Settings optimized for fast sampling in clean environments.
+    pub fn fast() -> Self {
+        Self {
+            jitter_threshold_pct: I32F32::from_num(0.02),
+        }
+    }
+}
+
+/// The generic Smt160 driver, decoupled from hardware via the Smt160Hal trait.
+pub struct Smt160Driver<H, S> {
+    hal: H,
+    _state: PhantomData<S>,
+    config: Config,
+    last_temp: Option<I32F32>,
     last_period: u32,
+    sample_count: u32,
     watchdog_ticks: u32,
-    last_dma_count: u16,
     pub status: Smt160Status,
 }
 
-impl<TIM, DMA> Smt160<Uninitialized, TIM, DMA> 
+impl<H> Smt160Driver<H, Uninitialized> 
 where 
-    TIM: Smt160TimerInstance,
-    DMA: Smt160DmaChannel,
+    H: Smt160Hal,
 {
     /// Creates a new uninitialized driver instance.
-    pub fn new(timer: TIM, dma: DMA, buffer: &'static mut [u32; 4]) -> Self {
+    pub fn new(hal: H, config: Config) -> Self {
         Self {
+            hal,
             _state: PhantomData,
-            timer,
-            dma,
-            buffer,
+            config,
+            last_temp: None,
             last_period: 0,
+            sample_count: 0,
             watchdog_ticks: 0,
-            last_dma_count: 0,
             status: Smt160Status::empty(),
         }
     }
 
-    /// Initializes hardware and transitions to the `Ready` state.
-    pub fn init(self, clocks: &stm32f1xx_hal::rcc::Clocks) -> Result<Smt160<Ready, TIM, DMA>, Smt160Error> {
-        crate::hal::validate_clocks(clocks)?;
+    /// Initializes the hardware and transitions to the `Ready` state.
+    pub fn init(mut self, timer_freq: u32) -> Result<Smt160Driver<H, Ready>, Smt160Error> {
+        self.hal.setup(timer_freq)?;
         
-        self.timer.reset_hardware();
-        self.timer.setup_pwm_input();
-        self.timer.setup_dma_burst();
-
-        unsafe {
-            self.dma.setup_circular_capture(
-                self.timer.dmar_address(),
-                self.buffer.as_mut_ptr(),
-                4
-            );
-        }
-
-        Ok(Smt160 {
+        Ok(Smt160Driver {
+            hal: self.hal,
             _state: PhantomData,
-            timer: self.timer,
-            dma: self.dma,
-            buffer: self.buffer,
+            config: self.config,
+            last_temp: None,
             last_period: 0,
+            sample_count: 0,
             watchdog_ticks: 0,
-            last_dma_count: 0,
             status: Smt160Status::empty(),
         })
     }
 }
 
-impl<TIM, DMA> Smt160<Ready, TIM, DMA> 
+impl<H> Smt160Driver<H, Ready> 
 where 
-    TIM: Smt160TimerInstance,
-    DMA: Smt160DmaChannel,
+    H: Smt160Hal,
 {
-    /// Polls the DMA for new data and performs jitter diagnostics.
-    pub fn poll_dma(&mut self) -> Option<I32F32> {
-        let mut sample = None;
-
-        if self.dma.is_half_transfer() {
-            sample = Some((self.buffer[0], self.buffer[1]));
-            self.dma.clear_interrupt_flags();
-        } else if self.dma.is_transfer_complete() {
-            sample = Some((self.buffer[2], self.buffer[3]));
-            self.dma.clear_interrupt_flags();
+    /// Polls the hardware for new data and returns the filtered temperature.
+    ///
+    /// This method performs:
+    /// 1. Jitter detection based on the `Config` threshold.
+    /// 2. Raw signal decoding.
+    /// 3. Adaptive EWMA filtering.
+    pub fn read_temperature(&mut self) -> Option<I32F32> {
+        if !self.hal.is_new_data_available() {
+            self.tick_watchdog();
+            return None;
         }
 
-        if let Some((period, active)) = sample {
-            // Jitter Detection: If period changes by > 0.5% (1/200)
-            if self.last_period > 0 {
-                let delta = if period > self.last_period { period - self.last_period } else { self.last_period - period };
-                if delta > (self.last_period / 200) {
-                    self.status.insert(Smt160Status::JITTER_DETECTED);
-                } else {
-                    self.status.remove(Smt160Status::JITTER_DETECTED);
-                }
-            }
-            self.last_period = period;
-
-            match SignalDecoder::decode(period, active) {
-                Ok(raw) => {
-                    self.status.remove(Smt160Status::OUT_OF_BOUNDS);
-                    Some(SignalDecoder::apply_nlc(raw))
-                }
-                Err(_) => {
-                    self.status.insert(Smt160Status::OUT_OF_BOUNDS);
-                    None
-                }
-            }
-        } else {
-            None
-        }
-    }
-
-    /// Internal watchdog check called by user task.
-    pub fn check_watchdog(&mut self) -> Result<(), Smt160Error> {
-        let count = self.dma.get_remaining_transfers();
-        self.tick_watchdog(count)
-    }
-
-    /// Watchdog called every 1ms to detect sensor flatline.
-    pub fn tick_watchdog(&mut self, current_dma_count: u16) -> Result<(), Smt160Error> {
-        if current_dma_count == self.last_dma_count {
-            self.watchdog_ticks += 1;
-        } else {
-            self.watchdog_ticks = 0;
-            self.status.remove(Smt160Status::SENSOR_TIMEOUT);
-        }
-        self.last_dma_count = current_dma_count;
-
-        if self.watchdog_ticks >= 5 {
-            self.status.insert(Smt160Status::SENSOR_TIMEOUT);
-            return Err(Smt160Error::SensorTimeout);
-        }
-        Ok(())
-    }
-
-    /// Autonomous Hardware Recovery.
-    pub fn hard_reset(&mut self) {
-        self.dma.disable();
-        self.timer.reset_hardware();
-        self.status = Smt160Status::empty();
         self.watchdog_ticks = 0;
-        self.last_period = 0;
+        self.status.remove(Smt160Status::SENSOR_TIMEOUT);
+
+        let edge = self.hal.read_raw();
         
-        self.timer.setup_pwm_input();
-        self.timer.setup_dma_burst();
-        unsafe {
-            self.dma.setup_circular_capture(
-                self.timer.dmar_address(),
-                self.buffer.as_mut_ptr(),
-                4
-            );
+        // 1. Jitter Detection
+        if self.last_period > 0 {
+            let delta = if edge.period_ticks > self.last_period {
+                edge.period_ticks - self.last_period
+            } else {
+                self.last_period - edge.period_ticks
+            };
+            
+            let threshold = (I32F32::from_num(self.last_period) * self.config.jitter_threshold_pct).to_num::<u32>();
+            
+            if delta > threshold {
+                self.status.insert(Smt160Status::JITTER_DETECTED);
+            } else {
+                self.status.remove(Smt160Status::JITTER_DETECTED);
+            }
         }
+        self.last_period = edge.period_ticks;
+
+        // 2. Decode and Filter
+        match SignalDecoder::decode(edge.period_ticks, edge.high_ticks) {
+            Ok(raw) => {
+                self.status.remove(Smt160Status::OUT_OF_BOUNDS);
+                let corrected = SignalDecoder::apply_nlc(raw);
+                
+                let filtered = SignalDecoder::apply_adaptive_filter(
+                    corrected,
+                    self.last_temp,
+                    self.sample_count
+                );
+                
+                self.last_temp = Some(filtered);
+                self.sample_count = self.sample_count.saturating_add(1);
+                Some(filtered)
+            }
+            Err(_) => {
+                self.status.insert(Smt160Status::OUT_OF_BOUNDS);
+                None
+            }
+        }
+    }
+
+    /// Internal watchdog tick. Should be called if no data is available.
+    fn tick_watchdog(&mut self) {
+        self.watchdog_ticks = self.watchdog_ticks.saturating_add(1);
+        if self.watchdog_ticks >= 500 { // Assuming ~10ms polling, this is 5s
+            self.status.insert(Smt160Status::SENSOR_TIMEOUT);
+        }
+    }
+
+    /// Returns the current hardware status flags.
+    pub fn status(&self) -> Smt160Status {
+        self.status
+    }
+
+    /// Returns the underlying HAL for direct access if needed.
+    pub fn hal_mut(&mut self) -> &mut H {
+        &mut self.hal
     }
 }

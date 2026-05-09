@@ -1,13 +1,12 @@
 # 🏗️ Baremetal Setup Instructions for SMT160-Driver
 
-This guide provides instructions for integrating the `smt160-driver` into a baremetal Rust project (`no_std`) without a high-level async runtime or when using custom polling loops.
+This guide provides instructions for integrating the `smt160-driver` into a baremetal Rust project (`no_std`) using the new trait-injected architecture.
 
 ## 🎯 Prerequisites
 
 Before you begin, ensure you have:
--   A Rust toolchain configured for embedded development (e.g., `thumbv7m-none-eabi`).
--   A timer peripheral capable of measuring pulse widths (Input Capture mode).
--   `critical-section` implementation for your platform (if using Flash or atomic features).
+- A Rust toolchain configured for embedded development (e.g., `thumbv7m-none-eabi`).
+- A hardware timer/DMA subsystem capable of zero-jitter pulse capture.
 
 ## 📦 Installation
 
@@ -16,65 +15,64 @@ Add the `smt160-driver` to your `Cargo.toml`:
 ```toml
 [dependencies]
 smt160-driver = "0.1.0"
-fixed = { version = "1.27.0", features = ["az"] }
+fixed = "1.27.0"
 ```
 
-## ⚙️ Hardware Integration Layer
+## ⚙️ Hardware Abstraction Layer (HAL)
 
-If you are not using a pre-supported platform (like STM32F1), you must implement the `CaptureDevice` trait.
+To use the driver on any MCU, implement the `Smt160Hal` trait. This trait serves as the contract between the hardware registers and the generic decoding logic.
 
 ```rust
-use smt160_driver::platform::CaptureDevice;
+use smt160_driver::hal::{Smt160Hal, CapturedEdge};
+use smt160_driver::error::Smt160Error;
 
-pub struct MyCustomHardware;
+pub struct MyMcuHal {
+    // Peripheral ownership (e.g., Timer, DMA)
+}
 
-impl CaptureDevice for MyCustomHardware {
-    type Error = MyError;
-
-    fn get_capture_data(&self) -> (u64, u64) {
-        // Read raw period and active ticks from hardware registers
-        let period = read_reg(TIMER_PERIOD);
-        let active = read_reg(TIMER_ACTIVE);
-        (period as u64, active as u64)
+impl Smt160Hal for MyMcuHal {
+    fn setup(&mut self, freq_hz: u32) -> Result<(), Smt160Error> {
+        // Configure Timer for PWM Input Mode
+        // Configure DMA for circular capture
+        Ok(())
     }
 
-    async fn wait_for_new_data(&mut self) -> Result<(), Self::Error> {
-        // In a baremetal environment without an executor, this might 
-        // poll a 'ready' bit or wait for an interrupt flag.
-        while !is_data_ready() {
-            core::hint::spin_loop();
+    fn is_new_data_available(&self) -> bool {
+        // Check DMA Half-Transfer or Transfer-Complete flags
+        true 
+    }
+
+    fn read_raw(&self) -> CapturedEdge {
+        // Return the latest captured ticks
+        CapturedEdge {
+            period_ticks: 10000, // Total cycle duration
+            high_ticks: 4375,   // High phase duration
         }
-        Ok(())
     }
 }
 ```
 
-## 🚀 Usage Pattern: High-Precision Polling
+## 🚀 Usage Pattern: Polling Loop
 
-In baremetal systems where low latency is critical, you can use the `Smt160BlockingDriver` which avoids the overhead of async state machines.
+In baremetal systems, the driver is typically polled in the main loop or a periodic interrupt.
 
 ```rust
-use smt160_driver::decoder::Smt160Decoder;
-use smt160_driver::driver_blocking::Smt160BlockingDriver;
+use smt160_driver::{Smt160Driver, Config};
 
 fn main() {
-    // 1. Initialize logic engine (e.g. 8MHz timer)
-    let decoder = Smt160Decoder::new_standalone(8);
+    let my_hal = MyMcuHal::new();
     
-    // 2. Wrap hardware and timestamp source
-    let mut sensor = Smt160BlockingDriver::new(
-        pin, 
-        || get_timer_ticks(), 
-        decoder
-    );
+    // 1. Create the driver with a specific configuration
+    let mut driver = Smt160Driver::new(my_hal, Config::industrial());
+    
+    // 2. Initialize (transitions Uninitialized -> Ready)
+    let mut driver = driver.init(72_000_000).expect("Hardware init failed");
 
     loop {
-        // 3. Perform a blocking measurement with a 100ms timeout
-        match sensor.read_temperature_with_timeout(800_000) {
-            Ok(reading) => {
-                // temperature is in reading.temperature_celsius
-            }
-            Err(e) => handle_error(e),
+        // 3. Poll for new readings
+        if let Some(temperature) = driver.read_temperature() {
+            // temperature is a fixed-point I32F32 value
+            let temp_f32: f32 = temperature.to_num();
         }
     }
 }
@@ -83,16 +81,16 @@ fn main() {
 ## ✨ Key Architectural Considerations
 
 > [!TIP]
-> **Deterministic Execution**: The driver uses fixed-point arithmetic, which is significantly faster and more predictable on MCUs without an FPU (like Cortex-M0/M3).
+> **Adaptive Filtering**: The driver automatically applies an adaptive EWMA filter. During startup or rapid thermal transients (>5°C), it uses a fast-track $\alpha=0.8$. Once stabilized, it switches to $\alpha=0.1$ for maximum noise rejection.
 
-> [!WARNING]
-> **Interrupt Latency**: If using the polling driver, high interrupt load on the MCU can introduce jitter into the measurement. For 0.05°C precision, ensure your `get_timer_ticks()` source is stable and consider using the `read_temperature_high_precision()` method which wraps the loop in a critical section.
+> [!IMPORTANT]
+> **Fixed-Point Math**: All calculations use `I32F32` fixed-point math. This ensures deterministic performance on MCUs without an FPU and prevents rounding errors common with floating-point emulators.
 
 ---
 
 ## 📐 Accuracy vs. Clock Frequency
 
-To achieve industrial-grade precision, ensure your timer frequency meets the resolution requirements:
+To achieve the 0.05°C precision target, your timer frequency must provide sufficient resolution:
 
 | Frequency | Resolution | Status |
 | :--- | :--- | :--- |

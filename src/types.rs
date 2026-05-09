@@ -16,3 +16,6 @@ pub struct Uninitialized;
 /// Transitions to this state only occur after the clock frequency has been verified 
 /// to meet the 0.05°C precision requirements and the DMA/Timer subsystems are active.
 pub struct Ready;
+
+/// Zero-sized marker struct representing an actively polling SMT160 driver.
+pub struct Running;

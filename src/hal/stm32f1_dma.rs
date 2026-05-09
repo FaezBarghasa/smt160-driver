@@ -1,12 +1,5 @@
-//! STM32F1 DMA & Timer Abstraction for Zero-Jitter Capture
-//!
-//! This module completely encapsulates the complex PWM-Input Slave-Mode Timer
-//! and DMA Burst setup required to achieve < 0.05°C absolute precision.
-//!
-//! It relies on the `stm32f1xx-hal` PAC for direct register access and utilizes
-//! the HAL's standard DMA types to seamlessly integrate into modern RTIC 2.1 applications.
-
 use crate::error::Smt160Error;
+use crate::hal::{Smt160Hal, CapturedEdge};
 use stm32f1xx_hal::pac;
 use stm32f1xx_hal::rcc::Clocks;
 
@@ -19,6 +12,74 @@ pub fn validate_clocks(clocks: &Clocks) -> Result<(), Smt160Error> {
         Err(Smt160Error::ClockTooSlow)
     } else {
         Ok(())
+    }
+}
+
+/// STM32F1-specific implementation of the SMT160 HAL using DMA Burst and Timer Slave-Reset.
+///
+/// This adapter satisfies the generic `Smt160Hal` contract by managing the complex 
+/// interaction between the Timer CC units and the DMA DMAR register.
+pub struct Stm32F1DmaHal<TIM, DMA> {
+    timer: TIM,
+    dma: DMA,
+    buffer: &'static mut [u32; 4],
+}
+
+impl<TIM, DMA> Stm32F1DmaHal<TIM, DMA> 
+where 
+    TIM: Smt160TimerInstance,
+    DMA: Smt160DmaChannel,
+{
+    /// Creates a new STM32F1 DMA adapter.
+    pub fn new(timer: TIM, dma: DMA, buffer: &'static mut [u32; 4]) -> Self {
+        Self { timer, dma, buffer }
+    }
+}
+
+impl<TIM, DMA> Smt160Hal for Stm32F1DmaHal<TIM, DMA>
+where 
+    TIM: Smt160TimerInstance,
+    DMA: Smt160DmaChannel,
+{
+    fn setup(&mut self, _freq: u32) -> Result<(), Smt160Error> {
+        // Hardware-specific setup
+        self.timer.reset_hardware();
+        self.timer.setup_pwm_input();
+        self.timer.setup_dma_burst();
+
+        unsafe {
+            self.dma.setup_circular_capture(
+                self.timer.dmar_address(),
+                self.buffer.as_mut_ptr(),
+                4
+            );
+        }
+        Ok(())
+    }
+
+    #[inline(always)]
+    fn is_new_data_available(&self) -> bool {
+        self.dma.is_half_transfer() || self.dma.is_transfer_complete()
+    }
+
+    #[inline(always)]
+    fn read_raw(&self) -> CapturedEdge {
+        let (period, high) = if self.dma.is_half_transfer() {
+            let p = self.buffer[0];
+            let h = self.buffer[1];
+            self.dma.clear_interrupt_flags();
+            (p, h)
+        } else {
+            let p = self.buffer[2];
+            let h = self.buffer[3];
+            self.dma.clear_interrupt_flags();
+            (p, h)
+        };
+
+        CapturedEdge {
+            period_ticks: period,
+            high_ticks: high,
+        }
     }
 }
 
@@ -53,6 +114,8 @@ pub trait Smt160DmaChannel {
     /// Disables the DMA channel.
     fn disable(&self);
 }
+
+// ... rest of the file remains same with macros
 
 // ============================================================================
 // TIMER MACRO

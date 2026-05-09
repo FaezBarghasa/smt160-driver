@@ -3,10 +3,39 @@
 //! This module encapsulates all platform-specific register manipulations 
 //! behind safe traits, ensuring the main driver logic remains clean and testable.
 
+use crate::error::Smt160Error;
+
 pub mod stm32f1_dma;
 
-pub use stm32f1_dma::{
-    validate_clocks,
-    Smt160TimerInstance,
-    Smt160DmaChannel,
-};
+/// A single captured PWM cycle from the sensor.
+///
+/// This serves as the data contract between hardware-specific capture 
+/// logic and the generic decoding algorithms.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct CapturedEdge {
+    /// Total duration of the PWM cycle in timer ticks.
+    pub period_ticks: u32,
+    /// Duration of the high phase in timer ticks.
+    pub high_ticks: u32,
+}
+
+/// The core abstraction for SMT160 hardware.
+///
+/// Any platform wishing to support the SMT160 must implement this trait 
+/// using its specific timer and DMA/Interrupt mechanisms.
+pub trait Smt160Hal {
+    /// Initializes the hardware (clocks, pins, DMA, timers).
+    ///
+    /// `freq` is the timer clock frequency in Hz, used for internal calculations.
+    fn setup(&mut self, freq: u32) -> Result<(), Smt160Error>;
+
+    /// Returns true if the hardware has captured a new, unread PWM cycle.
+    fn is_new_data_available(&self) -> bool;
+
+    /// Reads the latest captured edge data from the hardware.
+    ///
+    /// This should be a non-blocking operation. It is recommended to use 
+    /// `#[inline(always)]` on the implementation to minimize overhead.
+    fn read_raw(&self) -> CapturedEdge;
+}
