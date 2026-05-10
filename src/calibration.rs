@@ -32,6 +32,58 @@ impl Calibration for LinearCalibration {
     }
 }
 
+/// A piecewise linear calibration using up to 5 points.
+/// 
+/// This allows for correcting non-linear sensor responses across the 
+/// entire temperature range.
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct PiecewiseLinearCalibration {
+    pub points: [(I32F32, I32F32); 5],
+    pub count: usize,
+}
+
+impl Default for PiecewiseLinearCalibration {
+    fn default() -> Self {
+        Self {
+            points: [(I32F32::from_num(0), I32F32::from_num(0)); 5],
+            count: 0,
+        }
+    }
+}
+
+impl Calibration for PiecewiseLinearCalibration {
+    fn calibrate(&self, temp: I32F32) -> I32F32 {
+        if self.count == 0 {
+            return temp;
+        }
+        if self.count == 1 {
+            return temp + self.points[0].1 - self.points[0].0;
+        }
+
+        // Clamp to extremes
+        if temp <= self.points[0].0 {
+            return self.points[0].1;
+        }
+        if temp >= self.points[self.count - 1].0 {
+            return self.points[self.count - 1].1;
+        }
+
+        // Search for the interval
+        for i in 0..self.count - 1 {
+            let (x0, y0) = self.points[i];
+            let (x1, y1) = self.points[i + 1];
+
+            if temp >= x0 && temp <= x1 {
+                let dx = x1 - x0;
+                let dy = y1 - y0;
+                return y0 + (temp - x0) * dy / dx;
+            }
+        }
+        temp
+    }
+}
+
 use embedded_storage::Storage;
 
 /// Magic number to identify valid calibration data in Flash.

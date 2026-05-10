@@ -35,81 +35,97 @@ impl defmt::Format for Smt160Status {
 
 use fixed::types::I32F32;
 
+use portable_atomic::{AtomicU32, AtomicU64};
+use core::sync::atomic::Ordering;
+
 /// Diagnostic metrics for monitoring sensor health.
 ///
-/// Uses Welford's online algorithm to calculate mean and standard deviation 
-/// of raw timer ticks with O(1) space and time.
-#[derive(Debug, Clone, Copy)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+/// Uses Welford's online algorithm with atomic updates to allow 
+/// concurrent health monitoring without locking.
 pub struct Diagnostics {
-    pub mean_ticks: I32F32,
-    pub m2_ticks: I32F32,
-    pub count: u32,
-    pub min_ticks: u32,
-    pub max_ticks: u32,
+    pub mean_ticks: AtomicU64, // bits of I32F32
+    pub m2_ticks: AtomicU64,   // bits of I32F32
+    pub count: AtomicU32,
+    pub min_ticks: AtomicU32,
+    pub max_ticks: AtomicU32,
     pub histogram: JitterHistogram,
 }
 
 impl Diagnostics {
     pub fn new() -> Self {
         Self { 
-            mean_ticks: I32F32::from_num(0), 
-            m2_ticks: I32F32::from_num(0), 
-            count: 0,
-            min_ticks: u32::MAX,
-            max_ticks: 0,
+            mean_ticks: AtomicU64::new(0), 
+            m2_ticks: AtomicU64::new(0), 
+            count: AtomicU32::new(0),
+            min_ticks: AtomicU32::new(u32::MAX),
+            max_ticks: AtomicU32::new(0),
             histogram: JitterHistogram::new(),
         }
     }
 
     /// Updates metrics with a new period measurement.
     pub fn update(&mut self, ticks: u32) {
-        if ticks < self.min_ticks { self.min_ticks = ticks; }
-        if ticks > self.max_ticks { self.max_ticks = ticks; }
-
-        self.count = self.count.saturating_add(1);
-        let x = I32F32::from_num(ticks);
-        let delta = x - self.mean_ticks;
-        self.mean_ticks += delta / I32F32::from_num(self.count);
-        let delta2 = x - self.mean_ticks;
-        self.m2_ticks += delta * delta2;
-
-        self.histogram.update(ticks, self.mean_ticks);
-    }
-
-    #[cfg(feature = "std")]
-    pub fn display_dashboard(&self) {
-        println!("SMT160 INDUSTRIAL STABILITY DASHBOARD");
-        println!("-------------------------------------");
-        println!("Samples: {}", self.count);
-        println!("Mean Period: {} ticks", self.mean_ticks);
-        println!("StdDev:      {} ticks", self.std_dev());
-        println!("Jitter P2P:  {} ticks", self.jitter_p2p());
-        println!("\nJITTER DISTRIBUTION (HISTOGRAM):");
-        let labels = ["<-20", "-20", "-10", "-5", "~0", "+5", "+10", "+20", ">20"];
-        for (i, count) in self.histogram.counts.iter().enumerate() {
-            let bar = "*".repeat((*count as f32 / self.count as f32 * 50.0) as usize);
-            println!("{:>4}: {:>6} | {}", labels[i], count, bar);
+        // Update Min/Max (not strictly atomic across whole struct but safe for individual fields)
+        let mut current_min = self.min_ticks.load(Ordering::Relaxed);
+        while ticks < current_min {
+            match self.min_ticks.compare_exchange_weak(current_min, ticks, Ordering::Relaxed, Ordering::Relaxed) {
+                Ok(_) => break,
+                Err(new_min) => current_min = new_min,
+            }
         }
+
+        let mut current_max = self.max_ticks.load(Ordering::Relaxed);
+        while ticks > current_max {
+            match self.max_ticks.compare_exchange_weak(current_max, ticks, Ordering::Relaxed, Ordering::Relaxed) {
+                Ok(_) => break,
+                Err(new_max) => current_max = new_max,
+            }
+        }
+
+        let count = self.count.fetch_add(1, Ordering::Relaxed) + 1;
+        let x = I32F32::from_num(ticks);
+        
+        // Atomic Welford's Update (simplified to critical section for consistency of mean/m2)
+        critical_section::with(|_| {
+            let mean_bits = self.mean_ticks.load(Ordering::Relaxed);
+            let m2_bits = self.m2_ticks.load(Ordering::Relaxed);
+            
+            let mut mean = I32F32::from_bits(mean_bits as i64);
+            let mut m2 = I32F32::from_bits(m2_bits as i64);
+            
+            let delta = x - mean;
+            mean += delta / I32F32::from_num(count);
+            let delta2 = x - mean;
+            m2 += delta * delta2;
+            
+            self.mean_ticks.store(mean.to_bits() as u64, Ordering::Relaxed);
+            self.m2_ticks.store(m2.to_bits() as u64, Ordering::Relaxed);
+        });
+
+        self.histogram.update(ticks, I32F32::from_bits(self.mean_ticks.load(Ordering::Relaxed) as i64));
     }
 
     /// Returns the standard deviation of captured ticks.
-    /// High variance often indicates EMI or connector failure.
     pub fn std_dev(&self) -> I32F32 {
-        if self.count < 2 {
+        let count = self.count.load(Ordering::Relaxed);
+        if count < 2 {
             I32F32::from_num(0)
         } else {
-            // I32F32 doesn't have sqrt natively in 'fixed' crate unless using libm or similar.
-            // We can use libm::sqrt if we convert to f32 or use a fixed-point sqrt.
-            let variance = self.m2_ticks / I32F32::from_num(self.count - 1);
+            let m2_bits = self.m2_ticks.load(Ordering::Relaxed);
+            let m2 = I32F32::from_bits(m2_bits as i64);
+            let variance = m2 / I32F32::from_num(count - 1);
             I32F32::from_num(libm::sqrt(variance.to_num::<f64>()))
         }
     }
 
-    /// Returns the peak-to-peak jitter in ticks.
+    pub fn mean_period(&self) -> I32F32 {
+        I32F32::from_bits(self.mean_ticks.load(Ordering::Relaxed) as i64)
+    }
+
     pub fn jitter_p2p(&self) -> u32 {
-        if self.count == 0 { 0 } else { self.max_ticks - self.min_ticks }
+        let max = self.max_ticks.load(Ordering::Relaxed);
+        let min = self.min_ticks.load(Ordering::Relaxed);
+        if max >= min { max - min } else { 0 }
     }
 }
 

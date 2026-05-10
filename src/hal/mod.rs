@@ -19,10 +19,10 @@ pub mod stm32g4_hrtim;
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[repr(C)]
 pub struct CapturedEdge {
-    /// Total duration of the PWM cycle in timer ticks.
-    pub period_ticks: u32,
-    /// Duration of the high phase in timer ticks.
-    pub high_ticks: u32,
+    /// Total duration of the PWM cycle in timer ticks (64-bit for overflow protection).
+    pub period_ticks: u64,
+    /// Duration of the high phase in timer ticks (64-bit for overflow protection).
+    pub high_ticks: u64,
 }
 
 /// The core abstraction for SMT160 hardware.

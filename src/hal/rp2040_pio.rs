@@ -90,8 +90,8 @@ where
     fn read_raw(&self) -> CapturedEdge {
         if let Some(val) = self.sm.rx_fifo().read() {
             CapturedEdge {
-                period_ticks: (val >> 16) & 0xFFFF,
-                high_ticks: val & 0xFFFF,
+                period_ticks: ((val >> 16) & 0xFFFF) as u64,
+                high_ticks: (val & 0xFFFF) as u64,
             }
         } else {
             CapturedEdge { period_ticks: 0, high_ticks: 0 }

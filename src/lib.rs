@@ -52,14 +52,14 @@ impl Config {
 }
 
 /// The generic Smt160 driver, decoupled from hardware via the Smt160Hal trait.
-pub struct Smt160Driver<H, S> {
+pub struct Smt160Driver<H, S, I = fugit::TimerInstantU32<1000>> {
     hal: H,
     _state: PhantomData<S>,
     config: Config,
     last_temp: Option<I32F32>,
-    last_period: u32,
+    last_period: u64,
     sample_count: u32,
-    last_update: fugit::TimerInstantU32<1000>,
+    last_update: I,
     pub status: Smt160Status,
     pub diagnostics: Diagnostics,
     pub calibration: LinearCalibration,
@@ -129,11 +129,11 @@ where
     /// This method uses the provided monotonic to update the internal watchdog.
     pub fn read_temperature<M>(&mut self) -> Option<I32F32> 
     where 
-        M: rtic_monotonics::Monotonic<Instant = fugit::TimerInstantU32<1000>>
+        M: rtic_monotonics::Monotonic
     {
         let now = M::now();
         let elapsed = now.checked_duration_since(self.last_update)
-            .unwrap_or(fugit::TimerDurationU32::from_ticks(0));
+            .unwrap_or(M::Duration::from_ticks(0));
 
         if !self.hal.is_new_data_available() {
             if elapsed.to_millis() >= self.config.timeout_ms {

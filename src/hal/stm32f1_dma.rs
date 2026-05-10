@@ -2,6 +2,8 @@ use crate::error::Smt160Error;
 use crate::hal::{Smt160Hal, CapturedEdge};
 use stm32f1xx_hal::pac;
 use stm32f1xx_hal::rcc::Clocks;
+use portable_atomic::AtomicU32;
+use core::sync::atomic::Ordering;
 
 /// Validates that the APB1 clock is running at least at 8 MHz.
 /// This is the absolute minimum resolution (125ns/tick) required to
@@ -40,8 +42,8 @@ impl<const N: usize> Smt160DmaBuffer<N> {
     pub fn get_edge(&self, index: usize) -> CapturedEdge {
         let val = self.raw[index];
         CapturedEdge {
-            period_ticks: val & 0xFFFF,
-            high_ticks: (val >> 16) & 0xFFFF,
+            period_ticks: (val & 0xFFFF) as u64,
+            high_ticks: ((val >> 16) & 0xFFFF) as u64,
         }
     }
 }
@@ -61,6 +63,7 @@ where
     waker: AtomicWaker,
     timer_channel: u8,
     buffer_len: u16,
+    overflow_count: AtomicU32,
 }
 
 impl<'a, TIM, DMA, const N: usize> Stm32F1DmaHal<'a, TIM, DMA, N> 
@@ -77,7 +80,13 @@ where
             waker: AtomicWaker::new(),
             timer_channel,
             buffer_len,
+            overflow_count: AtomicU32::new(0),
         }
+    }
+
+    /// Called from the Timer Update (Overflow) interrupt.
+    pub fn handle_timer_overflow(&self) {
+        self.overflow_count.fetch_add(1, Ordering::Relaxed);
     }
 }
 

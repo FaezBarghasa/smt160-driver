@@ -63,8 +63,8 @@ impl Smt160Hal for Stm32G4HrtimHal {
         self.tim_a.timaicr.write(|w| w.cpt1c().set_bit().cpt2c().set_bit());
 
         CapturedEdge {
-            period_ticks: period,
-            high_ticks: high,
+            period_ticks: period as u64,
+            high_ticks: high as u64,
         }
     }
 

@@ -24,7 +24,7 @@ impl SignalDecoder {
     /// # Mathematical Safety
     /// This function uses checked arithmetic and boundary validation to ensure 
     /// it never panics, even with malicious or corrupt hardware input.
-    pub fn decode(period_ticks: u32, active_ticks: u32) -> Result<I32F32, Smt160Error> {
+    pub fn decode(period_ticks: u64, active_ticks: u64) -> Result<I32F32, Smt160Error> {
         // Guard against zero-period (division by zero)
         if period_ticks == 0 {
             return Err(Smt160Error::SensorTimeout);
@@ -142,8 +142,8 @@ mod verification {
 
     #[kani::proof]
     fn verify_decode_no_panic() {
-        let period: u32 = kani::any();
-        let active: u32 = kani::any();
+        let period: u64 = kani::any();
+        let active: u64 = kani::any();
         // The decoder should never panic, regardless of input
         let _ = SignalDecoder::decode(period, active);
     }
