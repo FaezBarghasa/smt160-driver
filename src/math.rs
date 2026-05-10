@@ -24,6 +24,7 @@ impl SignalDecoder {
     /// # Mathematical Safety
     /// This function uses checked arithmetic and boundary validation to ensure 
     /// it never panics, even with malicious or corrupt hardware input.
+    #[inline(always)]
     pub fn decode(period_ticks: u64, active_ticks: u64) -> Result<I32F32, Smt160Error> {
         // Guard against zero-period (division by zero)
         if period_ticks == 0 {
@@ -58,6 +59,7 @@ impl SignalDecoder {
     }
 
     /// Applies Non-Linearity Correction (NLC) using linear interpolation.
+    #[inline(always)]
     pub fn apply_nlc(raw_temp: I32F32) -> I32F32 {
         Self::apply_nlc_custom(raw_temp, Self::DEFAULT_NLC_TABLE)
     }
@@ -101,6 +103,7 @@ impl SignalDecoder {
     /// - **Fast Track (α=0.8)**: Used if deviation > 5°C or during the first 16 samples. 
     ///   Ensures rapid response to thermal events or system startup.
     /// - **Steady State (α=0.1)**: Used for high-precision noise rejection once stabilized.
+    #[inline(always)]
     pub fn apply_adaptive_filter(current: I32F32, last: Option<I32F32>, count: u32) -> I32F32 {
         let last_val = match last {
             Some(v) => v,

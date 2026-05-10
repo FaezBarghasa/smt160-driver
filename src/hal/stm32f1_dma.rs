@@ -50,8 +50,12 @@ impl<const N: usize> Smt160DmaBuffer<N> {
 
 use embassy_sync::waitqueue::AtomicWaker;
 
-/// STM32F1-specific implementation of the SMT160 HAL using DMA Burst and Timer Slave-Reset.
-/// STM32F1-specific implementation of the SMT160 HAL using DMA Burst and Timer Slave-Reset.
+/// Optimized HAL for STM32F103C8T6 (BluePill).
+/// 
+/// Recommended Pin Mappings for BluePill:
+/// - TIM2: PA0 (CH1), PA1 (CH2)
+/// - TIM3: PA6 (CH1), PA7 (CH2)
+/// - TIM4: PB6 (CH1), PB7 (CH2)
 pub struct Stm32F1DmaHal<'a, TIM, DMA, const N: usize> 
 where 
     TIM: Smt160TimerInstance,

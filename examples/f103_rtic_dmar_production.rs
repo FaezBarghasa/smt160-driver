@@ -62,7 +62,7 @@ mod app {
             &mut *core::ptr::addr_of_mut!(DMA_BUFFER)
         }, 1, 100);
 
-        let driver = Smt160Driver::new(hal, Config::industrial())
+        let driver = Smt160Driver::new(hal, Config::industrial(), Mono::now())
             .init(72_000_000)
             .expect("Driver initialization failed");
         defmt::info!("Driver Initialized");

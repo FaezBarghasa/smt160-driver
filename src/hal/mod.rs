@@ -6,10 +6,7 @@
 use crate::error::Smt160Error;
 
 pub mod stm32f1_dma;
-#[cfg(feature = "rp2040")]
-pub mod rp2040_pio;
-#[cfg(feature = "stm32g4xx")]
-pub mod stm32g4_hrtim;
+// Other HALs removed to optimize for stm32f103c8t6 focus.
 
 /// A single captured PWM cycle from the sensor.
 ///

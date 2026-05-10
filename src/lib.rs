@@ -66,12 +66,13 @@ pub struct Smt160Driver<H, S, I = fugit::TimerInstantU32<1000>> {
     pub nlc_table: Option<&'static [(I32F32, I32F32)]>,
 }
 
-impl<H> Smt160Driver<H, Uninitialized> 
+impl<H, I> Smt160Driver<H, Uninitialized, I> 
 where 
     H: Smt160Hal,
+    I: Copy,
 {
     /// Creates a new uninitialized driver instance.
-    pub fn new(hal: H, config: Config) -> Self {
+    pub fn new(hal: H, config: Config, initial_instant: I) -> Self {
         Self {
             hal,
             _state: PhantomData,
@@ -79,7 +80,7 @@ where
             last_temp: None,
             last_period: 0,
             sample_count: 0,
-            last_update: fugit::TimerInstantU32::from_ticks(0),
+            last_update: initial_instant,
             status: Smt160Status::empty(),
             diagnostics: Diagnostics::new(),
             calibration: LinearCalibration::default(),
@@ -88,7 +89,7 @@ where
     }
 
     /// Initializes the hardware and transitions to the `Ready` state.
-    pub fn init(mut self, timer_freq: u32) -> Result<Smt160Driver<H, Ready>, Smt160Error> {
+    pub fn init(mut self, timer_freq: u32) -> Result<Smt160Driver<H, Ready, I>, Smt160Error> {
         self.hal.setup(timer_freq)?;
         
         Ok(Smt160Driver {
@@ -98,7 +99,7 @@ where
             last_temp: None,
             last_period: 0,
             sample_count: 0,
-            last_update: fugit::TimerInstantU32::from_ticks(0),
+            last_update: self.last_update,
             status: Smt160Status::empty(),
             diagnostics: self.diagnostics,
             calibration: self.calibration,
@@ -107,26 +108,27 @@ where
     }
 }
 
-impl<H> Smt160Driver<H, Ready> 
+impl<H, I> Smt160Driver<H, Ready, I> 
 where 
     H: Smt160Hal,
-{
+    I: Copy,
     /// Re-initializes the hardware and resets internal driver state.
     ///
     /// This is useful for autonomous recovery after a sensor timeout or signal loss.
-    pub fn reinit(&mut self, timer_freq: u32) -> Result<(), Smt160Error> {
+    pub fn reinit(&mut self, timer_freq: u32, reset_instant: I) -> Result<(), Smt160Error> {
         self.hal.setup(timer_freq)?;
         self.status = Smt160Status::empty();
         self.last_temp = None;
         self.sample_count = 0;
         self.last_period = 0;
-        self.last_update = fugit::TimerInstantU32::from_ticks(0);
+        self.last_update = reset_instant;
         Ok(())
     }
 
     /// Polls the hardware for new data and returns the filtered temperature.
     ///
     /// This method uses the provided monotonic to update the internal watchdog.
+    #[inline(always)]
     pub fn read_temperature<M>(&mut self) -> Option<I32F32> 
     where 
         M: rtic_monotonics::Monotonic
@@ -147,11 +149,11 @@ where
 
         let edge = self.hal.read_raw();
         self.last_period = edge.period_ticks;
-        self.diagnostics.update(edge.period_ticks);
+        self.diagnostics.update(edge.period_ticks as u32); // Diagnostics still uses u32 for ticks internally
 
         // Jitter Analysis: if sigma > 1.5% of mean period, set SIGNAL_NOISY
         let sigma = self.diagnostics.std_dev();
-        let mean = self.diagnostics.mean_ticks;
+        let mean = self.diagnostics.mean_period();
         if mean > 0 && sigma > (mean * I32F32::from_num(0.015)) {
             self.status.insert(Smt160Status::SIGNAL_NOISY);
         } else {
@@ -181,10 +183,12 @@ where
                 
                 // Gradient Monitoring: |T_current - T_previous| / dt > 10.0 °C/s
                 if let Some(prev) = self.last_temp {
-                    let dt = elapsed.to_millis() as f32 / 1000.0;
-                    if dt > 0.0 {
-                        let gradient = (filtered - prev).abs() / I32F32::from_num(dt);
-                        if gradient > 10.0 {
+                    let dt_ms = elapsed.to_millis();
+                    if dt_ms > 0 {
+                        // gradient = (diff * 1000) / dt_ms
+                        let diff = (filtered - prev).abs();
+                        let gradient = (diff * I32F32::from_num(1000)) / I32F32::from_num(dt_ms);
+                        if gradient > 10 {
                             self.status.insert(Smt160Status::GRADIENT_ERROR);
                         } else {
                             self.status.remove(Smt160Status::GRADIENT_ERROR);
@@ -211,7 +215,7 @@ where
     /// Asynchronously waits for a new sample and returns the filtered temperature.
     pub async fn read_temp<M>(&mut self) -> Option<I32F32> 
     where 
-        M: rtic_monotonics::Monotonic<Instant = fugit::TimerInstantU32<1000>>
+        M: rtic_monotonics::Monotonic<Instant = I>
     {
         if self.wait_for_update().await.is_ok() {
             self.read_temperature::<M>()
