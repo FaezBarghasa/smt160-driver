@@ -21,33 +21,26 @@ pub fn validate_clocks(clocks: &Clocks) -> Result<(), Smt160Error> {
 /// can be safely viewed as a sequence of `CapturedEdge` records.
 #[repr(C, align(4))]
 pub struct Smt160DmaBuffer {
-    raw: [u32; 4],
+    raw: [u16; 2],
 }
 
 impl Smt160DmaBuffer {
     /// Creates a new, zero-initialized DMA buffer.
     pub const fn new() -> Self {
-        Self { raw: [0; 4] }
+        Self { raw: [0; 2] }
     }
 
     /// Returns a raw pointer to the start of the buffer for DMA configuration.
-    pub fn as_mut_ptr(&mut self) -> *mut u32 {
+    pub fn as_mut_ptr(&mut self) -> *mut u16 {
         self.raw.as_mut_ptr()
     }
 
     /// Returns a reference to the captured edge in the specified half of the buffer.
-    ///
-    /// # Safety
-    /// This is safe because `CapturedEdge` is `repr(C)` and matches the layout 
-    /// of two consecutive `u32` words.
     #[inline(always)]
-    pub fn get_edge(&self, half: bool) -> &CapturedEdge {
-        unsafe {
-            if half {
-                &*(self.raw.as_ptr() as *const CapturedEdge)
-            } else {
-                &*(self.raw.as_ptr().add(2) as *const CapturedEdge)
-            }
+    pub fn get_edge(&self, _half: bool) -> CapturedEdge {
+        CapturedEdge {
+            period_ticks: self.raw[0] as u32,
+            high_ticks: self.raw[1] as u32,
         }
     }
 }
@@ -66,6 +59,7 @@ where
     buffer: &'a mut Smt160DmaBuffer,
     waker: AtomicWaker,
     timer_channel: u8,
+    buffer_len: u16,
 }
 
 impl<'a, TIM, DMA> Stm32F1DmaHal<'a, TIM, DMA> 
@@ -74,13 +68,14 @@ where
     DMA: Smt160DmaChannel,
 {
     /// Creates a new STM32F1 DMA adapter for a specific timer channel (1 or 3).
-    pub fn new(timer: TIM, dma: DMA, buffer: &'a mut Smt160DmaBuffer, timer_channel: u8) -> Self {
+    pub fn new(timer: TIM, dma: DMA, buffer: &'a mut Smt160DmaBuffer, timer_channel: u8, buffer_len: u16) -> Self {
         Self { 
             timer, 
             dma, 
             buffer,
             waker: AtomicWaker::new(),
             timer_channel,
+            buffer_len,
         }
     }
 }
@@ -96,10 +91,14 @@ where
         self.timer.setup_dma_burst(self.timer_channel);
 
         unsafe {
+            let tim_ptr = self.timer.dmar_address(); // This is DMAR, but let's calculate CCR1
+            let ccr1_ptr = (tim_ptr & !0xFF) + 0x34; // Base + 0x34
+            defmt::info!("DMA Debug: Pointing to CCR1 at {:#X}", ccr1_ptr);
+            
             self.dma.setup_circular_capture(
-                self.timer.dmar_address(),
+                ccr1_ptr,
                 self.buffer.as_mut_ptr(),
-                4
+                self.buffer_len
             );
         }
         Ok(())
@@ -120,7 +119,7 @@ where
         let is_ht = self.dma.is_half_transfer();
         let edge = self.buffer.get_edge(is_ht);
         self.dma.clear_interrupt_flags();
-        *edge
+        edge
     }
 
     fn wait_for_new_data(&mut self) -> impl core::future::Future<Output = Result<(), Smt160Error>> {
@@ -145,6 +144,7 @@ where
     DMA: Smt160DmaChannel,
 {
     fn drop(&mut self) {
+        defmt::info!("Stm32F1DmaHal DROPPED - Disabling Hardware");
         self.dma.disable();
         self.timer.reset_hardware();
     }
@@ -173,7 +173,7 @@ pub trait Smt160DmaChannel {
     /// 
     /// # Safety
     /// `memory_addr` must point to a valid, pinned buffer.
-    unsafe fn setup_circular_capture(&self, peripheral_addr: u32, memory_addr: *mut u32, len: u16);
+    unsafe fn setup_circular_capture(&self, peripheral_addr: u32, memory_addr: *mut u16, len: u16);
     
     /// Clears all interrupt flags.
     fn clear_interrupt_flags(&self);
@@ -220,7 +220,7 @@ macro_rules! impl_smt160_timer {
             fn setup_dma_burst(&self, channel: u8) {
                 match channel {
                     1 => {
-                        self.dcr.modify(|_, w| unsafe { w.dba().bits(13).dbl().bits(1) });
+                        // self.dcr.modify(|_, w| unsafe { w.dba().bits(13).dbl().bits(1) });
                         self.dier.modify(|_, w| w.cc1de().set_bit());
                     }
                     3 => {
@@ -259,47 +259,53 @@ macro_rules! impl_smt160_dma {
     ($HAL_MOD:ident, $PAC_PERIPH:ident, $($CH:ident, $field:ident, $offset:expr),+) => {
         $(
             impl Smt160DmaChannel for stm32f1xx_hal::dma::$HAL_MOD::$CH {
-                unsafe fn setup_circular_capture(&self, peripheral_addr: u32, memory_addr: *mut u32, len: u16) {
-                    let dma = unsafe { &*pac::$PAC_PERIPH::ptr() };
-                    let ch = &dma.$field;
+                unsafe fn setup_circular_capture(&self, peripheral_addr: u32, memory_addr: *mut u16, len: u16) {
+                    let ch_base = 0x40020000 + 0x08 + ($offset * 0x14);
+                    let cr_ptr = ch_base as *mut u32;
+                    let ndtr_ptr = (ch_base + 0x04) as *mut u32;
+                    let par_ptr = (ch_base + 0x08) as *mut u32;
+                    let mar_ptr = (ch_base + 0x0C) as *mut u32;
 
-                    // Disable before configuration
-                    ch.cr.modify(|_, w| w.en().clear_bit());
+                    unsafe {
+                        // 1. Disable channel and wait for it to stop
+                        core::ptr::write_volatile(cr_ptr, core::ptr::read_volatile(cr_ptr) & !1);
+                        while (core::ptr::read_volatile(cr_ptr) & 1) != 0 {}
 
-                    ch.par.write(|w| unsafe { w.pa().bits(peripheral_addr) });
-                    ch.mar.write(|w| unsafe { w.ma().bits(memory_addr as u32) });
-                    ch.ndtr.write(|w| w.ndt().bits(len));
+                        // 2. Load addresses and length
+                        core::ptr::write_volatile(par_ptr, peripheral_addr);
+                        core::ptr::write_volatile(mar_ptr, memory_addr as u32);
+                        core::ptr::write_volatile(ndtr_ptr, len as u32);
 
-                    // CR: 32-bit MSIZE/PSIZE, MINC, CIRC, HTIE, TCIE, EN
-                    ch.cr.modify(|_, w| unsafe {
-                        w.msize().bits(0b10);
-                        w.psize().bits(0b10);
-                        w.minc().set_bit();
-                        w.circ().set_bit();
-                        w.htie().set_bit();
-                        w.tcie().set_bit();
-                        w.en().set_bit()
-                    });
+                        // 3. Configure and Enable
+                        // 0x58F: MSIZE=16bit, PSIZE=16bit, MINC, NO CIRC, TEIE, HTIE, TCIE, EN
+                        core::ptr::write_volatile(cr_ptr, 0x58F);
+                        let rb = core::ptr::read_volatile(cr_ptr);
+                        defmt::info!("DMA setup_circular_capture DONE | CR Write: 0x58F, Readback: {:#X}", rb);
+                    }
                 }
 
                 fn clear_interrupt_flags(&self) {
-                    let dma = unsafe { &*pac::$PAC_PERIPH::ptr() };
-                    dma.ifcr.write(|w| unsafe { w.bits(0xF << ($offset * 4)) });
+                    let dma_isr_base = 0x40020000 + 0x04; // DMA1_IFCR
+                    unsafe {
+                        core::ptr::write_volatile(dma_isr_base as *mut u32, 0xF << ($offset * 4));
+                    }
                 }
-
+                
                 fn is_half_transfer(&self) -> bool {
-                    let dma = unsafe { &*pac::$PAC_PERIPH::ptr() };
-                    (dma.isr.read().bits() >> ($offset * 4 + 2)) & 1 != 0
+                    let dma_isr = unsafe { core::ptr::read_volatile(0x40020000 as *const u32) };
+                    (dma_isr & (1 << (($offset * 4) + 2))) != 0 // HTIFx is bit 2 of the 4-bit block
                 }
-
+                
                 fn is_transfer_complete(&self) -> bool {
-                    let dma = unsafe { &*pac::$PAC_PERIPH::ptr() };
-                    (dma.isr.read().bits() >> ($offset * 4 + 1)) & 1 != 0
+                    let dma_isr = unsafe { core::ptr::read_volatile(0x40020000 as *const u32) };
+                    (dma_isr & (1 << (($offset * 4) + 1))) != 0 // TCIFx is bit 1 of the 4-bit block
                 }
 
                 fn disable(&self) {
-                    let dma = unsafe { &*pac::$PAC_PERIPH::ptr() };
-                    dma.$field.cr.modify(|_, w| w.en().clear_bit());
+                    let ch_base = 0x40020000 + 0x08 + ($offset * 0x14);
+                    unsafe {
+                        core::ptr::write_volatile(ch_base as *mut u32, core::ptr::read_volatile(ch_base as *mut u32) & !1);
+                    }
                 }
             }
         )+

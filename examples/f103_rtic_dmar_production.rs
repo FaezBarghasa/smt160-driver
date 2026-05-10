@@ -30,9 +30,12 @@ mod app {
         let mut flash = cx.device.FLASH.constrain();
         let rcc = cx.device.RCC.constrain();
 
-        // CRITICAL: Enable TIM2 peripheral clock before access
-        // In PAC 0.15, apb1enr is a field
-        unsafe { (*pac::RCC::ptr()).apb1enr.modify(|_, w| w.tim2en().set_bit()) };
+        // CRITICAL: Enable TIM2 and DMA1 peripheral clocks before access
+        unsafe { 
+            let rcc = &*pac::RCC::ptr();
+            rcc.apb1enr.modify(|_, w| w.tim2en().set_bit());
+            rcc.ahbenr.modify(|_, w| w.dma1en().set_bit());
+        };
 
         let clocks = rcc.cfgr
             .use_hse(8.MHz())
@@ -47,8 +50,8 @@ mod app {
 
         // PA0 is TIM2_CH1 (TI1) for the SMT160 Signal Input
         let mut gpioa = cx.device.GPIOA.split();
-        let _pin = gpioa.pa0.into_floating_input(&mut gpioa.crl);
-        defmt::info!("GPIO Initialized");
+        let _pin = gpioa.pa0.into_pull_up_input(&mut gpioa.crl);
+        defmt::info!("GPIO Initialized (Pull-Up)");
 
         // Circular DMA Buffer for CCR1 and CCR2 captures
         // Format: [CCR1_0, CCR2_0, CCR1_1, CCR2_1]
@@ -58,14 +61,15 @@ mod app {
         let dma1 = cx.device.DMA1.split();
         defmt::info!("DMA Initialized");
 
-        // TIM2_CH1 DMA request is on Channel 4
+        // TIM2_CH1 DMA request is on Channel 5 (dma1.4)
+        // Testing with 100 transfers, NO circular mode
         let hal = Stm32F1DmaHal::new(cx.device.TIM2, dma1.4, unsafe {
             &mut *core::ptr::addr_of_mut!(DMA_BUFFER)
-        }, 1);
+        }, 1, 100);
 
         let driver = Smt160Driver::new(hal, Config::industrial())
             .init(72_000_000)
-            .unwrap();
+            .expect("Driver initialization failed");
         defmt::info!("Driver Initialized");
 
         // Initialize Systick for 1ms resolution watchdog (72MHz)
@@ -79,8 +83,9 @@ mod app {
     }
 
     /// High-Priority DMA Task: Triggered on Half-Transfer or Transfer-Complete
-    #[task(binds = DMA1_CHANNEL4, shared = [driver], priority = 2)]
+    #[task(binds = DMA1_CHANNEL5, shared = [driver], priority = 2)]
     fn on_dma(mut cx: on_dma::Context) {
+        defmt::info!("DMA Interrupt Fired");
         cx.shared.driver.lock(|driver| {
             driver.hal_mut().notify();
             if let Some(temp) = driver.read_temperature::<Mono>() {
@@ -96,8 +101,22 @@ mod app {
         loop {
             // Check sensor health every 10ms
             Mono::delay(10.millis()).await;
-            defmt::info!("Watchdog Tick");
+            
+            // Diagnostic: Read raw hardware state
+            let tim2_cnt = unsafe { (*pac::TIM2::ptr()).cnt.read().bits() };
+            let dma1_isr = unsafe { (*pac::DMA1::ptr()).isr.read().bits() };
+            let tim2_dier = unsafe { (*pac::TIM2::ptr()).dier.read().bits() };
+            let tim2_ccer = unsafe { (*pac::TIM2::ptr()).ccer.read().bits() };
+            let tim2_sr = unsafe { (*pac::TIM2::ptr()).sr.read().bits() };
+            let tim2_dcr = unsafe { (*pac::TIM2::ptr()).dcr.read().bits() };
+            let dma1_ptr = pac::DMA1::ptr() as u32;
+            let dma1_ccr5_raw = unsafe { core::ptr::read_volatile(0x40020058 as *const u32) };
+            let dma1_cndtr5_raw = unsafe { core::ptr::read_volatile(0x4002005C as *const u32) };
+            let dma1_isr_raw = unsafe { core::ptr::read_volatile(0x40020000 as *const u32) };
+            let rcc_ahbenr = unsafe { (*pac::RCC::ptr()).ahbenr.read().bits() };
 
+            defmt::info!("Watchdog Tick | Base: {:#X} | ISR: {:#X} | CNDTR: {} | CCR: {:#X} | AHB: {:#X}", dma1_ptr, dma1_isr_raw, dma1_cndtr5_raw, dma1_ccr5_raw, rcc_ahbenr);
+ 
             cx.shared.driver.lock(|driver| {
                 if let Some(temp) = driver.read_temperature::<Mono>() {
                     defmt::info!("Watchdog Backup Read: {} °C", temp.to_num::<f32>());
