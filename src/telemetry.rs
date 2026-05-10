@@ -16,6 +16,12 @@ bitflags! {
         
         /// Sensor pulse not detected for > 5ms. Indicates disconnection or hardware freeze.
         const SENSOR_TIMEOUT  = 1 << 2;
+
+        /// Temperature change rate exceeds 10°C/s.
+        const GRADIENT_ERROR = 1 << 3;
+
+        /// Signal jitter exceeds 1.5% of mean period.
+        const SIGNAL_NOISY = 1 << 4;
     }
 }
 
@@ -27,6 +33,8 @@ impl defmt::Format for Smt160Status {
     }
 }
 
+use fixed::types::I32F32;
+
 /// Diagnostic metrics for monitoring sensor health.
 ///
 /// Uses Welford's online algorithm to calculate mean and standard deviation 
@@ -35,8 +43,8 @@ impl defmt::Format for Smt160Status {
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Diagnostics {
-    pub mean_ticks: f32,
-    pub m2_ticks: f32,
+    pub mean_ticks: I32F32,
+    pub m2_ticks: I32F32,
     pub count: u32,
     pub min_ticks: u32,
     pub max_ticks: u32,
@@ -46,8 +54,8 @@ pub struct Diagnostics {
 impl Diagnostics {
     pub fn new() -> Self {
         Self { 
-            mean_ticks: 0.0, 
-            m2_ticks: 0.0, 
+            mean_ticks: I32F32::from_num(0), 
+            m2_ticks: I32F32::from_num(0), 
             count: 0,
             min_ticks: u32::MAX,
             max_ticks: 0,
@@ -61,9 +69,9 @@ impl Diagnostics {
         if ticks > self.max_ticks { self.max_ticks = ticks; }
 
         self.count = self.count.saturating_add(1);
-        let x = ticks as f32;
+        let x = I32F32::from_num(ticks);
         let delta = x - self.mean_ticks;
-        self.mean_ticks += delta / self.count as f32;
+        self.mean_ticks += delta / I32F32::from_num(self.count);
         let delta2 = x - self.mean_ticks;
         self.m2_ticks += delta * delta2;
 
@@ -75,8 +83,8 @@ impl Diagnostics {
         println!("SMT160 INDUSTRIAL STABILITY DASHBOARD");
         println!("-------------------------------------");
         println!("Samples: {}", self.count);
-        println!("Mean Period: {:.2} ticks", self.mean_ticks);
-        println!("StdDev:      {:.2} ticks", self.std_dev());
+        println!("Mean Period: {} ticks", self.mean_ticks);
+        println!("StdDev:      {} ticks", self.std_dev());
         println!("Jitter P2P:  {} ticks", self.jitter_p2p());
         println!("\nJITTER DISTRIBUTION (HISTOGRAM):");
         let labels = ["<-20", "-20", "-10", "-5", "~0", "+5", "+10", "+20", ">20"];
@@ -88,12 +96,14 @@ impl Diagnostics {
 
     /// Returns the standard deviation of captured ticks.
     /// High variance often indicates EMI or connector failure.
-    pub fn std_dev(&self) -> f32 {
+    pub fn std_dev(&self) -> I32F32 {
         if self.count < 2 {
-            0.0
+            I32F32::from_num(0)
         } else {
-            // Using libm for no_std sqrt
-            libm::sqrtf(self.m2_ticks / (self.count - 1) as f32)
+            // I32F32 doesn't have sqrt natively in 'fixed' crate unless using libm or similar.
+            // We can use libm::sqrt if we convert to f32 or use a fixed-point sqrt.
+            let variance = self.m2_ticks / I32F32::from_num(self.count - 1);
+            I32F32::from_num(libm::sqrt(variance.to_num::<f64>()))
         }
     }
 
@@ -119,8 +129,8 @@ impl JitterHistogram {
         Self { counts: [0; 9] }
     }
 
-    pub fn update(&mut self, ticks: u32, mean: f32) {
-        let diff = (ticks as f32 - mean) as i32;
+    pub fn update(&mut self, ticks: u32, mean: I32F32) {
+        let diff = (I32F32::from_num(ticks) - mean).to_num::<i32>();
         let bucket = if diff < -20 { 0 }
         else if diff < -10 { 1 }
         else if diff < -5 { 2 }

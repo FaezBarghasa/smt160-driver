@@ -6,6 +6,10 @@
 use crate::error::Smt160Error;
 
 pub mod stm32f1_dma;
+#[cfg(feature = "rp2040")]
+pub mod rp2040_pio;
+#[cfg(feature = "stm32g4xx")]
+pub mod stm32g4_hrtim;
 
 /// A single captured PWM cycle from the sensor.
 ///

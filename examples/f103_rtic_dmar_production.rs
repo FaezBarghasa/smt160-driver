@@ -19,7 +19,7 @@ mod app {
 
     #[shared]
     struct Shared {
-        driver: Smt160Driver<Stm32F1DmaHal<'static, pac::TIM2, stm32f1xx_hal::dma::dma1::C4>, Ready>,
+        driver: Smt160Driver<Stm32F1DmaHal<'static, pac::TIM2, stm32f1xx_hal::dma::dma1::C4, 100>, Ready>,
     }
 
     #[local]
@@ -30,12 +30,7 @@ mod app {
         let mut flash = cx.device.FLASH.constrain();
         let rcc = cx.device.RCC.constrain();
 
-        // CRITICAL: Enable TIM2 and DMA1 peripheral clocks before access
-        unsafe { 
-            let rcc = &*pac::RCC::ptr();
-            rcc.apb1enr.modify(|_, w| w.tim2en().set_bit());
-            rcc.ahbenr.modify(|_, w| w.dma1en().set_bit());
-        };
+
 
         let clocks = rcc.cfgr
             .use_hse(8.MHz())
@@ -55,7 +50,7 @@ mod app {
 
         // Circular DMA Buffer for CCR1 and CCR2 captures
         // Format: [CCR1_0, CCR2_0, CCR1_1, CCR2_1]
-        static mut DMA_BUFFER: smt160_driver::hal::stm32f1_dma::Smt160DmaBuffer = 
+        static mut DMA_BUFFER: smt160_driver::hal::stm32f1_dma::Smt160DmaBuffer<100> = 
             smt160_driver::hal::stm32f1_dma::Smt160DmaBuffer::new();
 
         let dma1 = cx.device.DMA1.split();

@@ -132,11 +132,10 @@ where
         M: rtic_monotonics::Monotonic<Instant = fugit::TimerInstantU32<1000>>
     {
         let now = M::now();
+        let elapsed = now.checked_duration_since(self.last_update)
+            .unwrap_or(fugit::TimerDurationU32::from_ticks(0));
 
         if !self.hal.is_new_data_available() {
-            let elapsed = now.checked_duration_since(self.last_update)
-                .unwrap_or(fugit::TimerDurationU32::from_ticks(0));
-            
             if elapsed.to_millis() >= self.config.timeout_ms {
                 self.status.insert(Smt160Status::SENSOR_TIMEOUT);
             }
@@ -149,6 +148,15 @@ where
         let edge = self.hal.read_raw();
         self.last_period = edge.period_ticks;
         self.diagnostics.update(edge.period_ticks);
+
+        // Jitter Analysis: if sigma > 1.5% of mean period, set SIGNAL_NOISY
+        let sigma = self.diagnostics.std_dev();
+        let mean = self.diagnostics.mean_ticks;
+        if mean > 0 && sigma > (mean * I32F32::from_num(0.015)) {
+            self.status.insert(Smt160Status::SIGNAL_NOISY);
+        } else {
+            self.status.remove(Smt160Status::SIGNAL_NOISY);
+        }
 
         // 2. Decode and Filter
         match SignalDecoder::decode(edge.period_ticks, edge.high_ticks) {
@@ -171,6 +179,19 @@ where
                     self.sample_count
                 );
                 
+                // Gradient Monitoring: |T_current - T_previous| / dt > 10.0 °C/s
+                if let Some(prev) = self.last_temp {
+                    let dt = elapsed.to_millis() as f32 / 1000.0;
+                    if dt > 0.0 {
+                        let gradient = (filtered - prev).abs() / I32F32::from_num(dt);
+                        if gradient > 10.0 {
+                            self.status.insert(Smt160Status::GRADIENT_ERROR);
+                        } else {
+                            self.status.remove(Smt160Status::GRADIENT_ERROR);
+                        }
+                    }
+                }
+
                 self.last_temp = Some(filtered);
                 self.sample_count = self.sample_count.saturating_add(1);
                 Some(filtered)

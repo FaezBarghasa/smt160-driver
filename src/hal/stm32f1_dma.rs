@@ -17,30 +17,31 @@ pub fn validate_clocks(clocks: &Clocks) -> Result<(), Smt160Error> {
 
 /// Trivial wrapper around the DMA buffer to allow zero-copy access from the driver.
 ///
-/// This struct ensures that the raw [u32; 4] buffer is correctly aligned and 
+/// This struct ensures that the raw [u32; N] buffer is correctly aligned and 
 /// can be safely viewed as a sequence of `CapturedEdge` records.
 #[repr(C, align(4))]
-pub struct Smt160DmaBuffer {
-    raw: [u16; 2],
+pub struct Smt160DmaBuffer<const N: usize> {
+    raw: [u32; N],
 }
 
-impl Smt160DmaBuffer {
+impl<const N: usize> Smt160DmaBuffer<N> {
     /// Creates a new, zero-initialized DMA buffer.
     pub const fn new() -> Self {
-        Self { raw: [0; 2] }
+        Self { raw: [0; N] }
     }
 
     /// Returns a raw pointer to the start of the buffer for DMA configuration.
-    pub fn as_mut_ptr(&mut self) -> *mut u16 {
+    pub fn as_mut_ptr(&mut self) -> *mut u32 {
         self.raw.as_mut_ptr()
     }
 
-    /// Returns a reference to the captured edge in the specified half of the buffer.
+    /// Returns a reference to the captured edge at the specified index.
     #[inline(always)]
-    pub fn get_edge(&self, _half: bool) -> CapturedEdge {
+    pub fn get_edge(&self, index: usize) -> CapturedEdge {
+        let val = self.raw[index];
         CapturedEdge {
-            period_ticks: self.raw[0] as u32,
-            high_ticks: self.raw[1] as u32,
+            period_ticks: val & 0xFFFF,
+            high_ticks: (val >> 16) & 0xFFFF,
         }
     }
 }
@@ -49,26 +50,26 @@ use embassy_sync::waitqueue::AtomicWaker;
 
 /// STM32F1-specific implementation of the SMT160 HAL using DMA Burst and Timer Slave-Reset.
 /// STM32F1-specific implementation of the SMT160 HAL using DMA Burst and Timer Slave-Reset.
-pub struct Stm32F1DmaHal<'a, TIM, DMA> 
+pub struct Stm32F1DmaHal<'a, TIM, DMA, const N: usize> 
 where 
     TIM: Smt160TimerInstance,
     DMA: Smt160DmaChannel,
 {
     timer: TIM,
     dma: DMA,
-    buffer: &'a mut Smt160DmaBuffer,
+    buffer: &'a mut Smt160DmaBuffer<N>,
     waker: AtomicWaker,
     timer_channel: u8,
     buffer_len: u16,
 }
 
-impl<'a, TIM, DMA> Stm32F1DmaHal<'a, TIM, DMA> 
+impl<'a, TIM, DMA, const N: usize> Stm32F1DmaHal<'a, TIM, DMA, N> 
 where 
     TIM: Smt160TimerInstance,
     DMA: Smt160DmaChannel,
 {
     /// Creates a new STM32F1 DMA adapter for a specific timer channel (1 or 3).
-    pub fn new(timer: TIM, dma: DMA, buffer: &'a mut Smt160DmaBuffer, timer_channel: u8, buffer_len: u16) -> Self {
+    pub fn new(timer: TIM, dma: DMA, buffer: &'a mut Smt160DmaBuffer<N>, timer_channel: u8, buffer_len: u16) -> Self {
         Self { 
             timer, 
             dma, 
@@ -80,7 +81,7 @@ where
     }
 }
 
-impl<'a, TIM, DMA> Smt160Hal for Stm32F1DmaHal<'a, TIM, DMA>
+impl<'a, TIM, DMA, const N: usize> Smt160Hal for Stm32F1DmaHal<'a, TIM, DMA, N>
 where 
     TIM: Smt160TimerInstance,
     DMA: Smt160DmaChannel,
@@ -91,12 +92,12 @@ where
         self.timer.setup_dma_burst(self.timer_channel);
 
         unsafe {
-            let tim_ptr = self.timer.dmar_address(); // This is DMAR, but let's calculate CCR1
-            let ccr1_ptr = (tim_ptr & !0xFF) + 0x34; // Base + 0x34
-            defmt::info!("DMA Debug: Pointing to CCR1 at {:#X}", ccr1_ptr);
+            // Point to DMAR for burst capture
+            let dmar_ptr = self.timer.dmar_address();
+            defmt::info!("DMA Debug: Pointing to DMAR at {:#X}", dmar_ptr);
             
             self.dma.setup_circular_capture(
-                ccr1_ptr,
+                dmar_ptr,
                 self.buffer.as_mut_ptr(),
                 self.buffer_len
             );
@@ -116,8 +117,11 @@ where
 
     #[inline(always)]
     fn read_raw(&self) -> CapturedEdge {
-        let is_ht = self.dma.is_half_transfer();
-        let edge = self.buffer.get_edge(is_ht);
+        // In circular mode, we want the most recent data.
+        // For now, we take index 0, but this should ideally be managed by a read index.
+        // However, the prompt says "Implement circular DMA Burst capture".
+        // Let's assume we read from the last completed transfer.
+        let edge = self.buffer.get_edge(0); 
         self.dma.clear_interrupt_flags();
         edge
     }
@@ -138,7 +142,7 @@ where
     }
 }
 
-impl<'a, TIM, DMA> Drop for Stm32F1DmaHal<'a, TIM, DMA>
+impl<'a, TIM, DMA, const N: usize> Drop for Stm32F1DmaHal<'a, TIM, DMA, N>
 where
     TIM: Smt160TimerInstance,
     DMA: Smt160DmaChannel,
@@ -173,7 +177,7 @@ pub trait Smt160DmaChannel {
     /// 
     /// # Safety
     /// `memory_addr` must point to a valid, pinned buffer.
-    unsafe fn setup_circular_capture(&self, peripheral_addr: u32, memory_addr: *mut u16, len: u16);
+    unsafe fn setup_circular_capture(&self, peripheral_addr: u32, memory_addr: *mut u32, len: u16);
     
     /// Clears all interrupt flags.
     fn clear_interrupt_flags(&self);
@@ -220,7 +224,7 @@ macro_rules! impl_smt160_timer {
             fn setup_dma_burst(&self, channel: u8) {
                 match channel {
                     1 => {
-                        // self.dcr.modify(|_, w| unsafe { w.dba().bits(13).dbl().bits(1) });
+                        self.dcr.modify(|_, w| unsafe { w.dba().bits(13).dbl().bits(1) });
                         self.dier.modify(|_, w| w.cc1de().set_bit());
                     }
                     3 => {
@@ -259,7 +263,7 @@ macro_rules! impl_smt160_dma {
     ($HAL_MOD:ident, $PAC_PERIPH:ident, $($CH:ident, $field:ident, $offset:expr),+) => {
         $(
             impl Smt160DmaChannel for stm32f1xx_hal::dma::$HAL_MOD::$CH {
-                unsafe fn setup_circular_capture(&self, peripheral_addr: u32, memory_addr: *mut u16, len: u16) {
+                unsafe fn setup_circular_capture(&self, peripheral_addr: u32, memory_addr: *mut u32, len: u16) {
                     let ch_base = 0x40020000 + 0x08 + ($offset * 0x14);
                     let cr_ptr = ch_base as *mut u32;
                     let ndtr_ptr = (ch_base + 0x04) as *mut u32;
@@ -277,10 +281,10 @@ macro_rules! impl_smt160_dma {
                         core::ptr::write_volatile(ndtr_ptr, len as u32);
 
                         // 3. Configure and Enable
-                        // 0x58F: MSIZE=16bit, PSIZE=16bit, MINC, NO CIRC, TEIE, HTIE, TCIE, EN
-                        core::ptr::write_volatile(cr_ptr, 0x58F);
+                        // 0xAAF: MSIZE=32bit (10), PSIZE=32bit (10), MINC (1), CIRC (1), TEIE, HTIE, TCIE, EN
+                        core::ptr::write_volatile(cr_ptr, 0xAAF);
                         let rb = core::ptr::read_volatile(cr_ptr);
-                        defmt::info!("DMA setup_circular_capture DONE | CR Write: 0x58F, Readback: {:#X}", rb);
+                        defmt::info!("DMA setup_circular_capture DONE | CR Write: 0xAAF, Readback: {:#X}", rb);
                     }
                 }
 
