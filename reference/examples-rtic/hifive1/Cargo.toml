@@ -1,0 +1,23 @@
+[package]
+name = "rtic_hifive1"
+categories = ["embedded", "no-std"]
+description = "Examples of RTIC apps for the HiFive1 board"
+license = "MIT OR Apache-2.0"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[dependencies]
+rtic = { path = "../../rtic" }
+heapless = { version = "0.8.0", features = ["portable-atomic-unsafe-assume-single-core"] }
+hifive1 = { version = "0.13.0", features = ["board-redv"] }
+riscv-rt = {version = "0.13.0", features = ["single-hart"]}
+riscv = "0.12.1"
+semihosting = { version = "0.1", features = ["stdio", "panic-handler"] }
+portable-atomic = { version = "1", features = ["unsafe-assume-single-core", "force-amo"] }
+
+[features]
+riscv-clint-backend = ["rtic/riscv-clint-backend"]
+riscv-mecall-backend = ["rtic/riscv-mecall-backend"]
+test-critical-section = []
