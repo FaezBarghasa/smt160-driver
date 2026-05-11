@@ -38,6 +38,8 @@ impl<const N: usize> Smt160DmaBuffer<N> {
     }
 
     /// Returns a reference to the captured edge at the specified index.
+    /// 
+    /// Each u32 holds interleaved 16-bit data: [Low 16: CCR1 (Period), High 16: CCR2 (High Time)].
     #[inline(always)]
     pub fn get_edge(&self, index: usize) -> CapturedEdge {
         let val = self.raw[index];
@@ -104,6 +106,8 @@ where
         self.timer.setup_pwm_input(self.timer_channel);
         self.timer.setup_dma_burst(self.timer_channel);
 
+        // SAFETY: Register access for DMA configuration is safe here because the HAL 
+        // has exclusive ownership of the timer and DMA channel in this Typestate.
         unsafe {
             // Point to DMAR for burst capture
             let dmar_ptr = self.timer.dmar_address();
@@ -130,10 +134,8 @@ where
 
     #[inline(always)]
     fn read_raw(&self) -> CapturedEdge {
-        // In circular mode, we want the most recent data.
-        // For now, we take index 0, but this should ideally be managed by a read index.
-        // However, the prompt says "Implement circular DMA Burst capture".
-        // Let's assume we read from the last completed transfer.
+        // In circular mode, we read from the beginning of the buffer.
+        // A more advanced implementation could track the DMA NDTR to find the most recent sample.
         let edge = self.buffer.get_edge(0); 
         self.dma.clear_interrupt_flags();
         edge
@@ -255,6 +257,7 @@ macro_rules! impl_smt160_timer {
             fn reset_hardware(&self) {
                 self.cr1.modify(|_, w| w.cen().clear_bit());
                 self.dier.modify(|_, w| w.cc1de().clear_bit().cc2de().clear_bit().cc3de().clear_bit().cc4de().clear_bit());
+                // SAFETY: Clearing SR is a standard hardware procedure.
                 self.sr.write(|w| unsafe { w.bits(0) });
             }
         }
@@ -283,6 +286,8 @@ macro_rules! impl_smt160_dma {
                     let par_ptr = (ch_base + 0x08) as *mut u32;
                     let mar_ptr = (ch_base + 0x0C) as *mut u32;
 
+                    // SAFETY: Direct register access for DMA channel configuration. 
+                    // This is safe because the HAL has exclusive ownership of the channel.
                     unsafe {
                         // 1. Disable channel and wait for it to stop
                         core::ptr::write_volatile(cr_ptr, core::ptr::read_volatile(cr_ptr) & !1);
@@ -296,30 +301,32 @@ macro_rules! impl_smt160_dma {
                         // 3. Configure and Enable
                         // 0xAAF: MSIZE=32bit (10), PSIZE=32bit (10), MINC (1), CIRC (1), TEIE, HTIE, TCIE, EN
                         core::ptr::write_volatile(cr_ptr, 0xAAF);
-                        let rb = core::ptr::read_volatile(cr_ptr);
-                        defmt::info!("DMA setup_circular_capture DONE | CR Write: 0xAAF, Readback: {:#X}", rb);
                     }
                 }
 
                 fn clear_interrupt_flags(&self) {
                     let dma_isr_base = 0x40020000 + 0x04; // DMA1_IFCR
+                    // SAFETY: Clearing interrupt flags is safe as it only affects status bits.
                     unsafe {
                         core::ptr::write_volatile(dma_isr_base as *mut u32, 0xF << ($offset * 4));
                     }
                 }
                 
                 fn is_half_transfer(&self) -> bool {
-                    let dma_isr = unsafe { core::ptr::read_volatile(0x40020000 as *const u32) };
+                    // SAFETY: Reading DMA ISR status flags is safe.
+                    let dma_isr = unsafe { (*pac::$PAC_PERIPH::ptr()).isr.read().bits() };
                     (dma_isr & (1 << (($offset * 4) + 2))) != 0 // HTIFx is bit 2 of the 4-bit block
                 }
                 
                 fn is_transfer_complete(&self) -> bool {
-                    let dma_isr = unsafe { core::ptr::read_volatile(0x40020000 as *const u32) };
+                    // SAFETY: Reading DMA ISR status flags is safe.
+                    let dma_isr = unsafe { (*pac::$PAC_PERIPH::ptr()).isr.read().bits() };
                     (dma_isr & (1 << (($offset * 4) + 1))) != 0 // TCIFx is bit 1 of the 4-bit block
                 }
 
                 fn disable(&self) {
                     let ch_base = 0x40020000 + 0x08 + ($offset * 0x14);
+                    // SAFETY: Disabling the DMA channel is safe during drop or shutdown.
                     unsafe {
                         core::ptr::write_volatile(ch_base as *mut u32, core::ptr::read_volatile(ch_base as *mut u32) & !1);
                     }

@@ -19,7 +19,7 @@ mod app {
 
     #[shared]
     struct Shared {
-        driver: Smt160Driver<Stm32F1DmaHal<'static, pac::TIM2, stm32f1xx_hal::dma::dma1::C4, 100>, Ready>,
+        driver: Smt160Driver<Stm32F1DmaHal<'static, pac::TIM2, stm32f1xx_hal::dma::dma1::C5, 100>, Ready>,
     }
 
     #[local]
@@ -49,17 +49,15 @@ mod app {
         defmt::info!("GPIO Initialized (Pull-Up)");
 
         // Circular DMA Buffer for CCR1 and CCR2 captures
-        // Format: [CCR1_0, CCR2_0, CCR1_1, CCR2_1]
-        static mut DMA_BUFFER: smt160_driver::hal::stm32f1_dma::Smt160DmaBuffer<100> = 
+        static mut BUF: smt160_driver::hal::stm32f1_dma::Smt160DmaBuffer<100> = 
             smt160_driver::hal::stm32f1_dma::Smt160DmaBuffer::new();
 
-        let dma1 = cx.device.DMA1.split();
+        let channels = cx.device.DMA1.split();
         defmt::info!("DMA Initialized");
 
-        // TIM2_CH1 DMA request is on Channel 5 (dma1.4)
-        // Testing with 100 transfers, NO circular mode
-        let hal = Stm32F1DmaHal::new(cx.device.TIM2, dma1.4, unsafe {
-            &mut *core::ptr::addr_of_mut!(DMA_BUFFER)
+        // TIM2_CH1 DMA request is on Channel 5
+        let hal = Stm32F1DmaHal::new(cx.device.TIM2, channels.5, unsafe {
+            &mut *core::ptr::addr_of_mut!(BUF)
         }, 1, 100);
 
         let driver = Smt160Driver::new(hal, Config::industrial(), Mono::now())
@@ -98,12 +96,12 @@ mod app {
             Mono::delay(10.millis()).await;
             
             // Diagnostic: Read raw hardware state
-            let tim2_cnt = unsafe { (*pac::TIM2::ptr()).cnt.read().bits() };
-            let dma1_isr = unsafe { (*pac::DMA1::ptr()).isr.read().bits() };
-            let tim2_dier = unsafe { (*pac::TIM2::ptr()).dier.read().bits() };
-            let tim2_ccer = unsafe { (*pac::TIM2::ptr()).ccer.read().bits() };
-            let tim2_sr = unsafe { (*pac::TIM2::ptr()).sr.read().bits() };
-            let tim2_dcr = unsafe { (*pac::TIM2::ptr()).dcr.read().bits() };
+            let _tim2_cnt = unsafe { (*pac::TIM2::ptr()).cnt.read().bits() };
+            let _dma1_isr = unsafe { (*pac::DMA1::ptr()).isr.read().bits() };
+            let _tim2_dier = unsafe { (*pac::TIM2::ptr()).dier.read().bits() };
+            let _tim2_ccer = unsafe { (*pac::TIM2::ptr()).ccer.read().bits() };
+            let _tim2_sr = unsafe { (*pac::TIM2::ptr()).sr.read().bits() };
+            let _tim2_dcr = unsafe { (*pac::TIM2::ptr()).dcr.read().bits() };
             let dma1_ptr = pac::DMA1::ptr() as u32;
             let dma1_ccr5_raw = unsafe { core::ptr::read_volatile(0x40020058 as *const u32) };
             let dma1_cndtr5_raw = unsafe { core::ptr::read_volatile(0x4002005C as *const u32) };
@@ -121,7 +119,7 @@ mod app {
                     defmt::info!(
                         "Sensor Flatline Detected! Attempting autonomous hardware recovery..."
                     );
-                    let _ = driver.reinit(72_000_000);
+                    let _ = driver.reinit(72_000_000, Mono::now());
                 }
             });
         }

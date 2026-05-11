@@ -20,7 +20,7 @@ mod app {
 
     #[shared]
     struct Shared {
-        driver: Smt160Driver<Stm32F1DmaHal<pac::TIM2, stm32f1xx_hal::dma::dma1::C4>, Ready>,
+        driver: Smt160Driver<Stm32F1DmaHal<'static, pac::TIM2, stm32f1xx_hal::dma::dma1::C4, 100>, Ready>,
     }
 
     #[local]
@@ -32,32 +32,29 @@ mod app {
     #[init]
     fn init(cx: init::Context) -> (Shared, Local) {
         let mut flash = cx.device.FLASH.constrain();
-        cx.device.RCC.apb1enr().modify(|_, w| w.tim2en().set_bit());
+        let rcc = cx.device.RCC.constrain();
 
-        let mut rcc = cx.device.RCC.freeze(
-            stm32f1xx_hal::rcc::Config::hse(8.MHz())
-                .sysclk(72.MHz())
-                .pclk1(36.MHz()),
-            &mut flash.acr,
-        );
+        let clocks = rcc.cfgr
+            .use_hse(8.MHz())
+            .sysclk(72.MHz())
+            .pclk1(36.MHz())
+            .freeze(&mut flash.acr);
 
-        let clocks = rcc.clocks;
+        let mut gpioa = cx.device.GPIOA.split();
+        let _pin = gpioa.pa0.into_pull_up_input(&mut gpioa.crl);
 
-        let mut gpioa = cx.device.GPIOA.split(&mut rcc);
-        let _pin = gpioa.pa0.into_floating_input(&mut gpioa.crl);
-
-        static mut DMA_BUFFER: Smt160DmaBuffer = Smt160DmaBuffer::new();
+        static mut DMA_BUFFER: Smt160DmaBuffer<100> = Smt160DmaBuffer::new();
         static mut SAMPLES: [I32F32; 1000] = [I32F32::ZERO; 1000];
 
-        let dma1 = cx.device.DMA1.split(&mut rcc);
+        let dma1 = cx.device.DMA1.split();
         
         let hal = Stm32F1DmaHal::new(cx.device.TIM2, dma1.4, unsafe {
             &mut *core::ptr::addr_of_mut!(DMA_BUFFER)
-        }, 1);
+        }, 1, 100);
 
-        let driver = Smt160Driver::new(hal, Config::industrial())
+        let driver = Smt160Driver::new(hal, Config::industrial(), Mono::now())
             .init(72_000_000)
-            .unwrap();
+            .expect("Driver initialization failed");
 
         Mono::start(cx.core.SYST, 72_000_000);
 
@@ -67,7 +64,7 @@ mod app {
         })
     }
 
-    #[task(binds = DMA1_CHANNEL4, shared = [driver], local = [samples, current_idx])]
+    #[task(binds = DMA1_CHANNEL5, shared = [driver], local = [samples, current_idx])]
     fn on_dma(mut cx: on_dma::Context) {
         let samples = cx.local.samples;
         let idx = cx.local.current_idx;

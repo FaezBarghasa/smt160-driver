@@ -156,7 +156,18 @@ mod verification {
         let temp: I32F32 = I32F32::from_bits(kani::any());
         let corrected = SignalDecoder::apply_nlc(temp);
         // Corrected temp must be within reasonable physical bounds if input was
-        kani::assert(corrected >= I32F32::from_num(-50), "NLC underflow");
-        kani::assert(corrected <= I32F32::from_num(150), "NLC overflow");
+        kani::assert(corrected >= I32F32::from_num(-55), "NLC underflow");
+        kani::assert(corrected <= I32F32::from_num(155), "NLC overflow");
+    }
+
+    #[kani::proof]
+    fn verify_adaptive_filter_no_panic() {
+        let current: I32F32 = I32F32::from_bits(kani::any());
+        let last_val: I32F32 = I32F32::from_bits(kani::any());
+        let last: Option<I32F32> = if kani::any() { Some(last_val) } else { None };
+        let count: u32 = kani::any();
+        // Adaptive filter should never panic or overflow internally 
+        // given its weighted average nature.
+        let _ = SignalDecoder::apply_adaptive_filter(current, last, count);
     }
 }

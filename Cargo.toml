@@ -20,6 +20,7 @@ embassy-sync = { version = "0.6", features = ["defmt"] }
 rtic-monotonics = { version = "2.1", features = ["cortex-m-systick"] }
 stm32f1xx-hal = { version = "0.10.0", features = ["rt", "stm32f103"] }
 portable-atomic = { version = "1.6", features = ["critical-section"] }
+critical-section = "1.1"
 serde = { version = "1.0", default-features = false, features = ["derive"], optional = true }
 
 [dev-dependencies]

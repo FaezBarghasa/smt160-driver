@@ -22,6 +22,9 @@ bitflags! {
 
         /// Signal jitter exceeds 1.5% of mean period.
         const SIGNAL_NOISY = 1 << 4;
+
+        /// Temperature change rate exceeds 15°C/s.
+        const THERMAL_RUNAWAY = 1 << 5;
     }
 }
 
@@ -105,17 +108,31 @@ impl Diagnostics {
         self.histogram.update(ticks, I32F32::from_bits(self.mean_ticks.load(Ordering::Relaxed) as i64));
     }
 
-    /// Returns the standard deviation of captured ticks.
-    pub fn std_dev(&self) -> I32F32 {
+    /// Returns the variance of captured ticks.
+    pub fn variance(&self) -> I32F32 {
         let count = self.count.load(Ordering::Relaxed);
         if count < 2 {
             I32F32::from_num(0)
         } else {
             let m2_bits = self.m2_ticks.load(Ordering::Relaxed);
             let m2 = I32F32::from_bits(m2_bits as i64);
-            let variance = m2 / I32F32::from_num(count - 1);
-            I32F32::from_num(libm::sqrt(variance.to_num::<f64>()))
+            m2 / I32F32::from_num(count - 1)
         }
+    }
+
+    /// Returns the standard deviation of captured ticks.
+    pub fn std_dev(&self) -> I32F32 {
+        let v = self.variance();
+        if v > 0 {
+            I32F32::from_num(libm::sqrt(v.to_num::<f64>()))
+        } else {
+            I32F32::from_num(0)
+        }
+    }
+
+    /// Returns the RMS Jitter (Standard Deviation of the period).
+    pub fn jitter_rms(&self) -> I32F32 {
+        self.std_dev()
     }
 
     pub fn mean_period(&self) -> I32F32 {

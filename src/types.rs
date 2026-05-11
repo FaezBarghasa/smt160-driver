@@ -19,3 +19,26 @@ pub struct Ready;
 
 /// Zero-sized marker struct representing an actively polling SMT160 driver.
 pub struct Running;
+
+use fixed::types::I32F32;
+
+/// Trait-based observer for RTIC 2.1 integration.
+/// 
+/// Implementing this trait allows external tasks to receive notifications 
+/// on critical sensor events without polling the status register.
+pub trait Smt160Observer: Send {
+    /// Called when a new temperature sample is processed.
+    fn on_threshold_crossed(&self, temp: I32F32);
+    
+    /// Called when the sensor signal is lost (timeout).
+    fn on_signal_lost(&self);
+    
+    /// Called when a hardware error (e.g., DMA failure) is detected.
+    fn on_hardware_error(&self);
+}
+
+impl Smt160Observer for () {
+    fn on_threshold_crossed(&self, _temp: I32F32) {}
+    fn on_signal_lost(&self) {}
+    fn on_hardware_error(&self) {}
+}
