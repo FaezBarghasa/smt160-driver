@@ -26,7 +26,7 @@ use fixed::types::I32F32;
 /// 
 /// Implementing this trait allows external tasks to receive notifications 
 /// on critical sensor events without polling the status register.
-pub trait Smt160Observer: Send {
+pub trait Smt160Observer: Send + Sync {
     /// Called when a new temperature sample is processed.
     fn on_threshold_crossed(&self, temp: I32F32);
     
@@ -38,7 +38,10 @@ pub trait Smt160Observer: Send {
 }
 
 impl Smt160Observer for () {
+    #[inline(always)]
     fn on_threshold_crossed(&self, _temp: I32F32) {}
+    #[inline(always)]
     fn on_signal_lost(&self) {}
+    #[inline(always)]
     fn on_hardware_error(&self) {}
 }

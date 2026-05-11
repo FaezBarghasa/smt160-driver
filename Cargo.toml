@@ -33,6 +33,9 @@ defmt-rtt = "0.4.1"
 [features]
 default = ["defmt"]
 std = []
+high = []
 defmt = ["dep:defmt", "embassy-sync/defmt", "fixed/defmt"]
 serde = ["dep:serde", "bitflags/serde", "fixed/serde"]
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }

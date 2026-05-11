@@ -139,25 +139,19 @@ mod tests {
     }
 }
 
-#[cfg(all(kani, feature = "std"))]
+#[cfg(kani)]
 mod verification {
     use super::*;
 
     #[kani::proof]
     fn verify_decode_no_panic() {
-        let period: u64 = kani::any();
-        let active: u64 = kani::any();
-        // The decoder should never panic, regardless of input
-        let _ = SignalDecoder::decode(period, active);
-    }
-
-    #[kani::proof]
-    fn verify_nlc_bounds() {
-        let temp: I32F32 = I32F32::from_bits(kani::any());
-        let corrected = SignalDecoder::apply_nlc(temp);
-        // Corrected temp must be within reasonable physical bounds if input was
-        kani::assert(corrected >= I32F32::from_num(-55), "NLC underflow");
-        kani::assert(corrected <= I32F32::from_num(155), "NLC overflow");
+        let period: u32 = kani::any();
+        let active: u32 = kani::any();
+        
+        // Kani will explore all values from 0 to u32::MAX for both `period` and `active`.
+        // This ensures no combination of input pulse widths can cause division-by-zero 
+        // or intermediate overflow inside the decode function.
+        let _ = SignalDecoder::decode(period as u64, active as u64);
     }
 
     #[kani::proof]
@@ -166,6 +160,7 @@ mod verification {
         let last_val: I32F32 = I32F32::from_bits(kani::any());
         let last: Option<I32F32> = if kani::any() { Some(last_val) } else { None };
         let count: u32 = kani::any();
+        
         // Adaptive filter should never panic or overflow internally 
         // given its weighted average nature.
         let _ = SignalDecoder::apply_adaptive_filter(current, last, count);

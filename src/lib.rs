@@ -157,6 +157,11 @@ where
 
         if !self.hal.is_new_data_available() {
             if elapsed_ms >= self.config.timeout_ms as u64 {
+                if !self.status.contains(Smt160Status::SENSOR_TIMEOUT) {
+                    if let Some(obs) = &self.observer {
+                        obs.on_signal_lost();
+                    }
+                }
                 self.status.insert(Smt160Status::SENSOR_TIMEOUT);
             }
             return None;
@@ -238,7 +243,10 @@ where
         if self.wait_for_update().await.is_ok() {
             self.read_temperature::<M>()
         } else {
-            if let Some(obs) = &self.observer { obs.on_signal_lost(); }
+            if !self.status.contains(Smt160Status::SENSOR_TIMEOUT) {
+                if let Some(obs) = &self.observer { obs.on_signal_lost(); }
+            }
+            self.status.insert(Smt160Status::SENSOR_TIMEOUT);
             None
         }
     }

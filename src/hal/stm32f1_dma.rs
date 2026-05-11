@@ -94,6 +94,11 @@ where
     pub fn handle_timer_overflow(&self) {
         self.overflow_count.fetch_add(1, Ordering::Relaxed);
     }
+
+    /// Returns the current state of the timer (SR, CCER) to ensure capture is actually happening on the pins.
+    pub fn check_timer_state(&self) -> (u32, u32) {
+        self.timer.check_timer_state()
+    }
 }
 
 impl<'a, TIM, DMA, const N: usize> Smt160Hal for Stm32F1DmaHal<'a, TIM, DMA, N>
@@ -111,6 +116,7 @@ where
         unsafe {
             // Point to DMAR for burst capture
             let dmar_ptr = self.timer.dmar_address();
+            #[cfg(feature = "defmt")]
             defmt::info!("DMA Debug: Pointing to DMAR at {:#X}", dmar_ptr);
             
             self.dma.setup_circular_capture(
@@ -119,6 +125,9 @@ where
                 self.buffer_len
             );
         }
+
+        self.timer.enable();
+
         Ok(())
     }
 
@@ -127,6 +136,7 @@ where
         let ht = self.dma.is_half_transfer();
         let tc = self.dma.is_transfer_complete();
         if ht || tc {
+            #[cfg(feature = "defmt")]
             defmt::info!("DMA Data: HT={}, TC={}", ht, tc);
         }
         ht || tc
@@ -163,6 +173,7 @@ where
     DMA: Smt160DmaChannel,
 {
     fn drop(&mut self) {
+        #[cfg(feature = "defmt")]
         defmt::info!("Stm32F1DmaHal DROPPED - Disabling Hardware");
         self.dma.disable();
         self.timer.reset_hardware();
@@ -181,7 +192,13 @@ pub trait Smt160TimerInstance {
     
     /// Returns the physical address of the Timer's DMA Burst (DMAR) register.
     fn dmar_address(&self) -> u32;
-    
+
+    /// Returns the current state of the timer (SR, CCER). Useful for debugging.
+    fn check_timer_state(&self) -> (u32, u32);
+
+    /// Enables the timer
+    fn enable(&self);
+
     /// Disables and resets the hardware.
     fn reset_hardware(&self);
 }
@@ -233,25 +250,34 @@ macro_rules! impl_smt160_timer {
                     }
                     _ => panic!("SMT160 driver only supports channels 1 and 3 on STM32F1"),
                 }
-                self.cr1.modify(|_, w| w.cen().set_bit());
             }
 
             fn setup_dma_burst(&self, channel: u8) {
                 match channel {
                     1 => {
                         self.dcr.modify(|_, w| unsafe { w.dba().bits(13).dbl().bits(1) });
-                        self.dier.modify(|_, w| w.cc1de().set_bit());
+                        self.dier.modify(|_, w| w.cc1de().set_bit()); // Set CC1DE
                     }
                     3 => {
                         self.dcr.modify(|_, w| unsafe { w.dba().bits(15).dbl().bits(1) });
-                        self.dier.modify(|_, w| w.cc3de().set_bit());
+                        self.dier.modify(|_, w| w.cc3de().set_bit()); // Set CC3DE
                     }
                     _ => panic!("SMT160 driver only supports channels 1 and 3 on STM32F1"),
                 }
+                // For PWM input, capture events on CC1 or CC3 should trigger DMA.
+                // We rely on CCxDE rather than TDE/UDE to directly trigger from the capture event.
             }
 
             fn dmar_address(&self) -> u32 {
                 self.dmar.as_ptr() as u32
+            }
+
+            fn check_timer_state(&self) -> (u32, u32) {
+                (self.sr.read().bits(), self.ccer.read().bits())
+            }
+
+            fn enable(&self) {
+                self.cr1.modify(|_, w| w.cen().set_bit());
             }
 
             fn reset_hardware(&self) {
