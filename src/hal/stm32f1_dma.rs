@@ -39,13 +39,14 @@ impl<const N: usize> Smt160DmaBuffer<N> {
 
     /// Returns a reference to the captured edge at the specified index.
     /// 
-    /// Each u32 holds interleaved 16-bit data: [Low 16: CCR1 (Period), High 16: CCR2 (High Time)].
+    /// Each burst capture transfers 2 words: CCR1 (Period) and CCR2 (High Time).
     #[inline(always)]
     pub fn get_edge(&self, index: usize) -> CapturedEdge {
-        let val = self.raw[index];
+        let period_val = self.raw[index * 2];
+        let high_val = self.raw[index * 2 + 1];
         CapturedEdge {
-            period_ticks: (val & 0xFFFF) as u64,
-            high_ticks: ((val >> 16) & 0xFFFF) as u64,
+            period_ticks: (period_val & 0xFFFF) as u64,
+            high_ticks: (high_val & 0xFFFF) as u64,
         }
     }
 }
@@ -106,15 +107,26 @@ where
     TIM: Smt160TimerInstance,
     DMA: Smt160DmaChannel,
 {
-    fn setup(&mut self, _freq: u32) -> Result<(), Smt160Error> {
+    fn setup(&mut self, freq: u32) -> Result<(), Smt160Error> {
+        // 1. Full reset: zero ALL timer registers to known defaults
         self.timer.reset_hardware();
+
+        // 2. Set prescaler (PSC is a preload register, loaded on next update event)
+        let sysclk = 72_000_000; // STM32F1 APB1 timer clock (72MHz when APB1 prescaler > 1)
+        let psc = (sysclk / freq).saturating_sub(1) as u16;
+        self.timer.set_prescaler(psc);
+
+        // 3. Set ARR to maximum so the counter has full 16-bit range
+        self.timer.set_arr(0xFFFF);
+
+        // 4. Configure PWM input mode (CCMR, CCER, SMCR)
         self.timer.setup_pwm_input(self.timer_channel);
+
+        // 5. Configure DMA burst (DCR, DIER)
         self.timer.setup_dma_burst(self.timer_channel);
 
-        // SAFETY: Register access for DMA configuration is safe here because the HAL 
-        // has exclusive ownership of the timer and DMA channel in this Typestate.
+        // 6. Configure DMA channel
         unsafe {
-            // Point to DMAR for burst capture
             let dmar_ptr = self.timer.dmar_address();
             #[cfg(feature = "defmt")]
             defmt::info!("DMA Debug: Pointing to DMAR at {:#X}", dmar_ptr);
@@ -126,6 +138,13 @@ where
             );
         }
 
+        // 7. Generate update event to load PSC and ARR into active registers
+        self.timer.generate_update();
+
+        // 8. Clear all SR flags that were set by the UG event
+        self.timer.clear_status();
+
+        // 9. Enable the timer
         self.timer.enable();
 
         Ok(())
@@ -144,9 +163,20 @@ where
 
     #[inline(always)]
     fn read_raw(&self) -> CapturedEdge {
-        // In circular mode, we read from the beginning of the buffer.
-        // A more advanced implementation could track the DMA NDTR to find the most recent sample.
-        let edge = self.buffer.get_edge(0); 
+        // Read CNDTR to find the most recent sample
+        let cndtr = self.dma.get_cndtr();
+        let elements_written = self.buffer_len - cndtr as u16;
+        
+        // Each edge consists of a 2-word burst. 
+        // We only want to read the last fully completed 2-word pair.
+        let full_edges_written = elements_written / 2;
+        let edge_idx = if full_edges_written == 0 {
+            (self.buffer_len / 2).saturating_sub(1)
+        } else {
+            full_edges_written.saturating_sub(1)
+        };
+        
+        let edge = self.buffer.get_edge(edge_idx as usize); 
         self.dma.clear_interrupt_flags();
         edge
     }
@@ -183,8 +213,6 @@ where
 /// Trait representing a Timer capable of advanced PWM Input + DMA Burst.
 pub trait Smt160TimerInstance {
     /// Configures the timer for PWM Input mode on the specified channel pair.
-    /// Channel pair 1: TI1/CC1/CC2, Channel pair 2: TI2/CC2/CC1 (not common), 
-    /// Channel pair 3: TI3/CC3/CC4, Channel pair 4: TI4/CC4/CC3.
     fn setup_pwm_input(&self, channel: u8);
     
     /// Configures the DMA Burst (DMAR) to fetch capture registers for the given channel.
@@ -196,11 +224,23 @@ pub trait Smt160TimerInstance {
     /// Returns the current state of the timer (SR, CCER). Useful for debugging.
     fn check_timer_state(&self) -> (u32, u32);
 
-    /// Enables the timer
+    /// Enables the timer (sets CEN).
     fn enable(&self);
 
-    /// Disables and resets the hardware.
+    /// Generates an update event to load shadow registers (PSC, ARR).
+    fn generate_update(&self);
+
+    /// Clears all status register flags.
+    fn clear_status(&self);
+
+    /// Performs a full reset of all timer registers to their default state.
     fn reset_hardware(&self);
+
+    /// Sets the timer prescaler.
+    fn set_prescaler(&self, psc: u16);
+
+    /// Sets the auto-reload register.
+    fn set_arr(&self, arr: u16);
 }
 
 /// Trait representing a DMA Channel mapped to a Timer event.
@@ -222,9 +262,10 @@ pub trait Smt160DmaChannel {
     
     /// Disables the DMA channel.
     fn disable(&self);
+    
+    /// Returns the current value of the CNDTR register.
+    fn get_cndtr(&self) -> u32;
 }
-
-// ... rest of the file remains same with macros
 
 // ============================================================================
 // TIMER MACRO
@@ -236,17 +277,43 @@ macro_rules! impl_smt160_timer {
             fn setup_pwm_input(&self, channel: u8) {
                 match channel {
                     1 => {
-                        self.ccmr1_input().modify(|_, w| w.cc1s().ti1().cc2s().ti1());
-                        self.ccer.modify(|_, w| w.cc1p().clear_bit().cc2p().set_bit().cc1e().set_bit().cc2e().set_bit());
-                        self.smcr.modify(|_, w| w.ts().ti1fp1().sms().reset_mode());
+                        // CCMR1 in input capture mode:
+                        //   CC1S = 01 (IC1 mapped to TI1)
+                        //   CC2S = 10 (IC2 mapped to TI1)
+                        //   IC1F = 0000 (no input filter)
+                        //   IC2F = 0000 (no input filter)
+                        //   IC1PSC = 00 (capture on every event)
+                        //   IC2PSC = 00 (capture on every event)
+                        // Using write (NOT modify) to guarantee a clean register state.
+                        self.ccmr1_input().write(|w| w.cc1s().ti1().cc2s().ti1());
+
+                        // CCER: CC1 rising edge, CC2 falling edge, both enabled
+                        // Using write to guarantee no stale bits from other channels.
+                        self.ccer.write(|w| {
+                            w.cc1p().clear_bit()  // CC1: non-inverted (rising edge)
+                             .cc1e().set_bit()     // CC1: enable
+                             .cc2p().set_bit()     // CC2: inverted (falling edge)
+                             .cc2e().set_bit()     // CC2: enable
+                        });
+
+                        // SMCR: Slave mode reset on TI1FP1 rising edge
+                        self.smcr.write(|w| w.ts().ti1fp1().sms().reset_mode());
                     }
                     3 => {
-                        self.ccmr2_input().modify(|_, w| w.cc3s().ti3().cc4s().ti3());
-                        self.ccer.modify(|_, w| w.cc3p().clear_bit().cc4p().set_bit().cc3e().set_bit().cc4e().set_bit());
+                        // CCMR2 in input capture mode:
+                        //   CC3S = 01 (IC3 mapped to TI3)
+                        //   CC4S = 10 (IC4 mapped to TI3)
+                        self.ccmr2_input().write(|w| w.cc3s().ti3().cc4s().ti3());
+
+                        self.ccer.write(|w| {
+                            w.cc3p().clear_bit()
+                             .cc3e().set_bit()
+                             .cc4p().set_bit()
+                             .cc4e().set_bit()
+                        });
+
                         // Note: STM32F1 Slave Mode Reset only supports TI1FP1 and TI2FP2.
-                        // For CH3/CH4, we still use TI1FP1 as the reset source if they are synchronized,
-                        // or this driver configuration may be invalid for independent CH3/CH4 sensors.
-                        self.smcr.modify(|_, w| w.ts().ti1fp1().sms().reset_mode());
+                        self.smcr.write(|w| w.ts().ti1fp1().sms().reset_mode());
                     }
                     _ => panic!("SMT160 driver only supports channels 1 and 3 on STM32F1"),
                 }
@@ -255,17 +322,19 @@ macro_rules! impl_smt160_timer {
             fn setup_dma_burst(&self, channel: u8) {
                 match channel {
                     1 => {
-                        self.dcr.modify(|_, w| unsafe { w.dba().bits(13).dbl().bits(1) });
-                        self.dier.modify(|_, w| w.cc1de().set_bit()); // Set CC1DE
+                        // DCR: DBA=13 (CCR1 offset), DBL=1 (2 transfers: CCR1 + CCR2)
+                        self.dcr.write(|w| unsafe { w.dba().bits(13).dbl().bits(1) });
+                        // DIER: enable CC1 DMA request (triggers burst on each capture)
+                        self.dier.write(|w| w.cc1de().set_bit());
                     }
                     3 => {
-                        self.dcr.modify(|_, w| unsafe { w.dba().bits(15).dbl().bits(1) });
-                        self.dier.modify(|_, w| w.cc3de().set_bit()); // Set CC3DE
+                        // DCR: DBA=15 (CCR3 offset), DBL=1 (2 transfers: CCR3 + CCR4)
+                        self.dcr.write(|w| unsafe { w.dba().bits(15).dbl().bits(1) });
+                        // DIER: enable CC3 DMA request
+                        self.dier.write(|w| w.cc3de().set_bit());
                     }
                     _ => panic!("SMT160 driver only supports channels 1 and 3 on STM32F1"),
                 }
-                // For PWM input, capture events on CC1 or CC3 should trigger DMA.
-                // We rely on CCxDE rather than TDE/UDE to directly trigger from the capture event.
             }
 
             fn dmar_address(&self) -> u32 {
@@ -277,14 +346,40 @@ macro_rules! impl_smt160_timer {
             }
 
             fn enable(&self) {
-                self.cr1.modify(|_, w| w.cen().set_bit());
+                self.cr1.write(|w| w.cen().set_bit());
+            }
+
+            fn generate_update(&self) {
+                self.egr.write(|w| w.ug().set_bit());
+            }
+
+            fn clear_status(&self) {
+                self.sr.write(|w| unsafe { w.bits(0) });
             }
 
             fn reset_hardware(&self) {
-                self.cr1.modify(|_, w| w.cen().clear_bit());
-                self.dier.modify(|_, w| w.cc1de().clear_bit().cc2de().clear_bit().cc3de().clear_bit().cc4de().clear_bit());
-                // SAFETY: Clearing SR is a standard hardware procedure.
+                // Full reset: write all registers to their default values.
+                // This guarantees no stale configuration from a previous run.
+                self.cr1.write(|w| unsafe { w.bits(0) });
+                self.cr2.write(|w| unsafe { w.bits(0) });
+                self.smcr.write(|w| unsafe { w.bits(0) });
+                self.dier.write(|w| unsafe { w.bits(0) });
                 self.sr.write(|w| unsafe { w.bits(0) });
+                self.ccmr1_output().write(|w| unsafe { w.bits(0) });
+                self.ccmr2_output().write(|w| unsafe { w.bits(0) });
+                self.ccer.write(|w| unsafe { w.bits(0) });
+                self.cnt.reset();
+                self.psc.write(|w| w.psc().bits(0));
+                self.arr.write(|w| w.arr().bits(0xFFFF));
+                self.dcr.write(|w| unsafe { w.bits(0) });
+            }
+
+            fn set_prescaler(&self, psc: u16) {
+                self.psc.write(|w| w.psc().bits(psc));
+            }
+
+            fn set_arr(&self, arr: u16) {
+                self.arr.write(|w| w.arr().bits(arr));
             }
         }
     };
@@ -356,6 +451,11 @@ macro_rules! impl_smt160_dma {
                     unsafe {
                         core::ptr::write_volatile(ch_base as *mut u32, core::ptr::read_volatile(ch_base as *mut u32) & !1);
                     }
+                }
+                
+                fn get_cndtr(&self) -> u32 {
+                    let ch_base = 0x40020000 + 0x08 + ($offset * 0x14);
+                    unsafe { core::ptr::read_volatile((ch_base + 0x04) as *const u32) }
                 }
             }
         )+

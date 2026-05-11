@@ -22,6 +22,16 @@ pub struct Running;
 
 use fixed::types::I32F32;
 
+/// Edge trigger direction for threshold notifications.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum TriggerEdge {
+    Rising,
+    Falling,
+    Both,
+}
+
 /// Trait-based observer for RTIC 2.1 integration.
 /// 
 /// Implementing this trait allows external tasks to receive notifications 

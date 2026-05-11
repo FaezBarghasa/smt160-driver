@@ -39,3 +39,8 @@ serde = ["dep:serde", "bitflags/serde", "fixed/serde"]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+
+[profile.release]
+debug = 2 # Required for defmt to resolve source locations
+lto = true
+opt-level = "z"

@@ -31,6 +31,10 @@ pub struct Config {
     pub jitter_threshold_pct: I32F32,
     /// Timeout in milliseconds.
     pub timeout_ms: u32,
+    /// Threshold temperature for edge-triggered notifications.
+    pub threshold: Option<I32F32>,
+    /// Which edge to trigger on when a threshold is configured.
+    pub trigger_edge: crate::types::TriggerEdge,
 }
 
 impl Config {
@@ -39,6 +43,8 @@ impl Config {
         Self {
             jitter_threshold_pct: I32F32::from_num(0.005),
             timeout_ms: 500,
+            threshold: None,
+            trigger_edge: crate::types::TriggerEdge::Both,
         }
     }
 
@@ -47,6 +53,8 @@ impl Config {
         Self {
             jitter_threshold_pct: I32F32::from_num(0.02),
             timeout_ms: 100,
+            threshold: None,
+            trigger_edge: crate::types::TriggerEdge::Both,
         }
     }
 }
@@ -61,6 +69,7 @@ where
     _state: PhantomData<S>,
     config: Config,
     last_temp: Option<I32F32>,
+    last_above_threshold: Option<bool>,
     last_period: u64,
     sample_count: u32,
     last_update: I,
@@ -84,6 +93,7 @@ where
             _state: PhantomData,
             config,
             last_temp: None,
+            last_above_threshold: None,
             last_period: 0,
             sample_count: 0,
             last_update: initial_instant,
@@ -110,6 +120,7 @@ where
             _state: PhantomData,
             config: self.config,
             last_temp: None,
+            last_above_threshold: None,
             last_period: 0,
             sample_count: 0,
             last_update: self.last_update,
@@ -134,6 +145,7 @@ where
         self.hal.setup(timer_freq)?;
         self.status = Smt160Status::empty();
         self.last_temp = None;
+        self.last_above_threshold = None;
         self.sample_count = 0;
         self.last_period = 0;
         self.last_update = reset_instant;
@@ -213,8 +225,31 @@ where
                     // A proper fix requires better trait bounds on I.
                 }
 
-                if let Some(obs) = &self.observer {
-                    obs.on_threshold_crossed(filtered);
+                // Threshold Edge Detection
+                if let Some(threshold) = self.config.threshold {
+                    let currently_above = filtered > threshold;
+                    
+                    if let Some(was_above) = self.last_above_threshold {
+                        if currently_above != was_above {
+                            let is_rising = currently_above && !was_above;
+                            let matches_edge = match self.config.trigger_edge {
+                                crate::types::TriggerEdge::Rising => is_rising,
+                                crate::types::TriggerEdge::Falling => !is_rising,
+                                crate::types::TriggerEdge::Both => true,
+                            };
+                            
+                            if matches_edge {
+                                if let Some(obs) = &self.observer {
+                                    obs.on_threshold_crossed(filtered);
+                                }
+                            }
+                        }
+                    }
+                    self.last_above_threshold = Some(currently_above);
+                } else {
+                    if let Some(obs) = &self.observer {
+                        obs.on_threshold_crossed(filtered);
+                    }
                 }
 
                 self.last_temp = Some(filtered);

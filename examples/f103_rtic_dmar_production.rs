@@ -30,8 +30,6 @@ mod app {
         let mut flash = cx.device.FLASH.constrain();
         let rcc = cx.device.RCC.constrain();
 
-
-
         let clocks = rcc.cfgr
             .use_hse(8.MHz())
             .sysclk(72.MHz())
@@ -45,8 +43,19 @@ mod app {
 
         // PA0 is TIM2_CH1 (TI1) for the SMT160 Signal Input
         let mut gpioa = cx.device.GPIOA.split();
-        let _pin = gpioa.pa0.into_pull_up_input(&mut gpioa.crl);
-        defmt::info!("GPIO Initialized (Pull-Up)");
+        let _pin = gpioa.pa0.into_floating_input(&mut gpioa.crl);
+        defmt::info!("GPIO Initialized (Floating Input)");
+
+        unsafe {
+            // Full RCC reset of TIM2 peripheral to guarantee clean register state
+            (*pac::RCC::ptr()).apb1rstr.modify(|_, w| w.tim2rst().set_bit());
+            (*pac::RCC::ptr()).apb1rstr.modify(|_, w| w.tim2rst().clear_bit());
+
+            // Enable TIM2 and AFIO clocks
+            (*pac::RCC::ptr()).apb1enr.modify(|_, w| w.tim2en().set_bit());
+            (*pac::RCC::ptr()).apb2enr.modify(|_, w| w.afioen().set_bit());
+            let _ = (*pac::RCC::ptr()).apb1enr.read(); // bus sync
+        }
 
         // Circular DMA Buffer for CCR1 and CCR2 captures
         static mut BUF: smt160_driver::hal::stm32f1_dma::Smt160DmaBuffer<100> = 
@@ -55,13 +64,14 @@ mod app {
         let channels = cx.device.DMA1.split();
         defmt::info!("DMA Initialized");
 
-        // TIM2_CH1 DMA request is on Channel 5
+        // TIM2_CH1 DMA request is on DMA1 Channel 5
         let hal = Stm32F1DmaHal::new(cx.device.TIM2, channels.5, unsafe {
             &mut *core::ptr::addr_of_mut!(BUF)
         }, 1, 100);
 
+        let timer_freq = 1_000_000; // 1 MHz capture resolution
         let driver = Smt160Driver::new(hal, Config::industrial(), Mono::now())
-            .init(72_000_000)
+            .init(timer_freq)
             .expect("Driver initialization failed");
         defmt::info!("Driver Initialized");
 
@@ -92,34 +102,35 @@ mod app {
     async fn watchdog(mut cx: watchdog::Context) {
         defmt::info!("Watchdog Task Started");
         loop {
-            // Check sensor health every 10ms
-            Mono::delay(10.millis()).await;
+            Mono::delay(100.millis()).await;
             
-            // Diagnostic: Read raw hardware state
-            let _tim2_cnt = unsafe { (*pac::TIM2::ptr()).cnt.read().bits() };
-            let _dma1_isr = unsafe { (*pac::DMA1::ptr()).isr.read().bits() };
-            let _tim2_dier = unsafe { (*pac::TIM2::ptr()).dier.read().bits() };
-            let _tim2_ccer = unsafe { (*pac::TIM2::ptr()).ccer.read().bits() };
-            let _tim2_sr = unsafe { (*pac::TIM2::ptr()).sr.read().bits() };
-            let _tim2_dcr = unsafe { (*pac::TIM2::ptr()).dcr.read().bits() };
-            let dma1_ptr = pac::DMA1::ptr() as u32;
-            let dma1_ccr5_raw = unsafe { core::ptr::read_volatile(0x40020058 as *const u32) };
-            let dma1_cndtr5_raw = unsafe { core::ptr::read_volatile(0x4002005C as *const u32) };
-            let dma1_isr_raw = unsafe { core::ptr::read_volatile(0x40020000 as *const u32) };
-            let rcc_ahbenr = unsafe { (*pac::RCC::ptr()).ahbenr.read().bits() };
+            // Read raw hardware state for diagnostics
+            let tim2_cnt = unsafe { (*pac::TIM2::ptr()).cnt.read().bits() };
+            let tim2_sr = unsafe { (*pac::TIM2::ptr()).sr.read().bits() };
+            let tim2_ccr1 = unsafe { (*pac::TIM2::ptr()).ccr1().read().bits() };
+            let tim2_ccr2 = unsafe { (*pac::TIM2::ptr()).ccr2().read().bits() };
+            let tim2_ccer = unsafe { (*pac::TIM2::ptr()).ccer.read().bits() };
+            let tim2_dier = unsafe { (*pac::TIM2::ptr()).dier.read().bits() };
+            let tim2_psc = unsafe { (*pac::TIM2::ptr()).psc.read().bits() };
+            let tim2_arr = unsafe { (*pac::TIM2::ptr()).arr.read().bits() };
+            let dma_cndtr = unsafe { core::ptr::read_volatile(0x4002005C as *const u32) };
+            let dma_isr = unsafe { core::ptr::read_volatile(0x40020000 as *const u32) };
 
-            defmt::info!("Watchdog Tick | Base: {:#X} | ISR: {:#X} | CNDTR: {} | CCR: {:#X} | AHB: {:#X}", dma1_ptr, dma1_isr_raw, dma1_cndtr5_raw, dma1_ccr5_raw, rcc_ahbenr);
+            defmt::info!(
+                "CNDTR:{} CNT:{} SR:{:#X} CCR1:{} CCR2:{} CCER:{:#X} DIER:{:#X} PSC:{} ARR:{} DMA_ISR:{:#X}",
+                dma_cndtr, tim2_cnt, tim2_sr, tim2_ccr1, tim2_ccr2, tim2_ccer, tim2_dier, tim2_psc, tim2_arr, dma_isr
+            );
  
             cx.shared.driver.lock(|driver| {
                 if let Some(temp) = driver.read_temperature::<Mono>() {
-                    defmt::info!("Watchdog Backup Read: {} °C", temp.to_num::<f32>());
+                    defmt::info!("Watchdog Temp: {} °C", temp.to_num::<f32>());
                 }
 
                 if driver.status().contains(Smt160Status::SENSOR_TIMEOUT) {
                     defmt::info!(
                         "Sensor Flatline Detected! Attempting autonomous hardware recovery..."
                     );
-                    let _ = driver.reinit(72_000_000, Mono::now());
+                    let _ = driver.reinit(1_000_000, Mono::now());
                 }
             });
         }

@@ -110,7 +110,12 @@ impl SignalDecoder {
             None => return current,
         };
 
-        let diff = (current - last_val).abs();
+        let diff = if current > last_val {
+            current.saturating_sub(last_val)
+        } else {
+            last_val.saturating_sub(current)
+        };
+
         let alpha = if diff > I32F32::from_num(5) || count < 16 {
             I32F32::from_num(0.8)
         } else {
@@ -119,7 +124,10 @@ impl SignalDecoder {
 
         // Y_n = alpha * X_n + (1 - alpha) * Y_{n-1}
         let one_minus_alpha = I32F32::from_num(1) - alpha;
-        (alpha * current) + (one_minus_alpha * last_val)
+        
+        let term1 = alpha.saturating_mul(current);
+        let term2 = one_minus_alpha.saturating_mul(last_val);
+        term1.saturating_add(term2)
     }
 }
 
