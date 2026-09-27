@@ -7,13 +7,13 @@
 
 /// Zero-sized marker struct representing an uninitialized SMT160 driver.
 ///
-/// In this state, the driver has no ownership of hardware peripherals and 
+/// In this state, the driver has no ownership of hardware peripherals and
 /// cannot perform any measurements. This is the starting point for the driver lifecycle.
 pub struct Uninitialized;
 
 /// Zero-sized marker struct representing a fully initialized and validated SMT160 driver.
 ///
-/// Transitions to this state only occur after the clock frequency has been verified 
+/// Transitions to this state only occur after the clock frequency has been verified
 /// to meet the 0.05°C precision requirements and the DMA/Timer subsystems are active.
 pub struct Ready;
 
@@ -33,16 +33,16 @@ pub enum TriggerEdge {
 }
 
 /// Trait-based observer for RTIC 2.1 integration.
-/// 
-/// Implementing this trait allows external tasks to receive notifications 
+///
+/// Implementing this trait allows external tasks to receive notifications
 /// on critical sensor events without polling the status register.
 pub trait Smt160Observer: Send + Sync {
     /// Called when a new temperature sample is processed.
     fn on_threshold_crossed(&self, temp: I32F32);
-    
+
     /// Called when the sensor signal is lost (timeout).
     fn on_signal_lost(&self);
-    
+
     /// Called when a hardware error (e.g., DMA failure) is detected.
     fn on_hardware_error(&self);
 }

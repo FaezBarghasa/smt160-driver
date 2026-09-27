@@ -1,6 +1,6 @@
-use fixed::types::I32F32;
-use embedded_storage::ReadStorage;
 use crate::error::Smt160Error;
+use embedded_storage::ReadStorage;
+use fixed::types::I32F32;
 
 /// Trait for sensor calibration logic.
 pub trait Calibration {
@@ -33,8 +33,8 @@ impl Calibration for LinearCalibration {
 }
 
 /// A piecewise linear calibration using up to 5 points.
-/// 
-/// This allows for correcting non-linear sensor responses across the 
+///
+/// This allows for correcting non-linear sensor responses across the
 /// entire temperature range.
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -91,28 +91,49 @@ const CALIB_MAGIC: u32 = 0x534D5431; // "SMT1"
 const CALIB_VERSION: u16 = 1;
 
 /// Helper to load calibration from storage.
-pub fn load_calibration<S: ReadStorage>(storage: &mut S, address: u32) -> Result<LinearCalibration, Smt160Error> {
+pub fn load_calibration<S: ReadStorage>(
+    storage: &mut S,
+    address: u32,
+) -> Result<LinearCalibration, Smt160Error> {
     let mut magic_buf = [0u8; 4];
-    storage.read(address, &mut magic_buf).map_err(|_| Smt160Error::InvalidBuffer)?;
+    storage
+        .read(address, &mut magic_buf)
+        .map_err(|_| Smt160Error::InvalidBuffer)?;
     if u32::from_le_bytes(magic_buf) != CALIB_MAGIC {
         return Err(Smt160Error::InvalidSignal); // Using InvalidSignal as a placeholder for InvalidCalibration
     }
 
     let mut buf = [0u8; 8];
-    storage.read(address + 8, &mut buf).map_err(|_| Smt160Error::InvalidBuffer)?;
+    storage
+        .read(address + 8, &mut buf)
+        .map_err(|_| Smt160Error::InvalidBuffer)?;
     let slope = I32F32::from_bits(i64::from_le_bytes(buf));
-    
-    storage.read(address + 16, &mut buf).map_err(|_| Smt160Error::InvalidBuffer)?;
+
+    storage
+        .read(address + 16, &mut buf)
+        .map_err(|_| Smt160Error::InvalidBuffer)?;
     let offset = I32F32::from_bits(i64::from_le_bytes(buf));
-    
+
     Ok(LinearCalibration { slope, offset })
 }
 
 /// Helper to save calibration to storage.
-pub fn save_calibration<S: Storage>(storage: &mut S, address: u32, cal: &LinearCalibration) -> Result<(), Smt160Error> {
-    storage.write(address, &CALIB_MAGIC.to_le_bytes()).map_err(|_| Smt160Error::InvalidBuffer)?;
-    storage.write(address + 4, &CALIB_VERSION.to_le_bytes()).map_err(|_| Smt160Error::InvalidBuffer)?;
-    storage.write(address + 8, &cal.slope.to_bits().to_le_bytes()).map_err(|_| Smt160Error::InvalidBuffer)?;
-    storage.write(address + 16, &cal.offset.to_bits().to_le_bytes()).map_err(|_| Smt160Error::InvalidBuffer)?;
+pub fn save_calibration<S: Storage>(
+    storage: &mut S,
+    address: u32,
+    cal: &LinearCalibration,
+) -> Result<(), Smt160Error> {
+    storage
+        .write(address, &CALIB_MAGIC.to_le_bytes())
+        .map_err(|_| Smt160Error::InvalidBuffer)?;
+    storage
+        .write(address + 4, &CALIB_VERSION.to_le_bytes())
+        .map_err(|_| Smt160Error::InvalidBuffer)?;
+    storage
+        .write(address + 8, &cal.slope.to_bits().to_le_bytes())
+        .map_err(|_| Smt160Error::InvalidBuffer)?;
+    storage
+        .write(address + 16, &cal.offset.to_bits().to_le_bytes())
+        .map_err(|_| Smt160Error::InvalidBuffer)?;
     Ok(())
 }

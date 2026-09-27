@@ -10,16 +10,19 @@ systick_monotonic!(Mono, 1_000);
 
 #[app(device = pac, dispatchers = [USART1])]
 mod app {
-    use stm32f1xx_hal::{pac, prelude::*};
-    use smt160_driver::hal::stm32f1_dma::{Stm32F1DmaHal, validate_clocks};
-    use smt160_driver::hal::Smt160Hal;
-    use smt160_driver::{Config, Ready, Smt160Driver, Smt160Status};
-    use rtic_monotonics::Monotonic;
     use super::Mono;
+    use rtic_monotonics::Monotonic;
+    use smt160_driver::hal::Smt160Hal;
+    use smt160_driver::hal::stm32f1_dma::{Stm32F1DmaHal, validate_clocks};
+    use smt160_driver::{Config, Ready, Smt160Driver, Smt160Status};
+    use stm32f1xx_hal::{pac, prelude::*};
 
     #[shared]
     struct Shared {
-        driver: Smt160Driver<Stm32F1DmaHal<'static, pac::TIM2, stm32f1xx_hal::dma::dma1::C5, 100>, Ready>,
+        driver: Smt160Driver<
+            Stm32F1DmaHal<'static, pac::TIM2, stm32f1xx_hal::dma::dma1::C5, 100>,
+            Ready,
+        >,
     }
 
     #[local]
@@ -30,7 +33,8 @@ mod app {
         let mut flash = cx.device.FLASH.constrain();
         let rcc = cx.device.RCC.constrain();
 
-        let clocks = rcc.cfgr
+        let clocks = rcc
+            .cfgr
             .use_hse(8.MHz())
             .sysclk(72.MHz())
             .pclk1(36.MHz())
@@ -48,26 +52,38 @@ mod app {
 
         unsafe {
             // Full RCC reset of TIM2 peripheral to guarantee clean register state
-            (*pac::RCC::ptr()).apb1rstr.modify(|_, w| w.tim2rst().set_bit());
-            (*pac::RCC::ptr()).apb1rstr.modify(|_, w| w.tim2rst().clear_bit());
+            (*pac::RCC::ptr())
+                .apb1rstr
+                .modify(|_, w| w.tim2rst().set_bit());
+            (*pac::RCC::ptr())
+                .apb1rstr
+                .modify(|_, w| w.tim2rst().clear_bit());
 
             // Enable TIM2 and AFIO clocks
-            (*pac::RCC::ptr()).apb1enr.modify(|_, w| w.tim2en().set_bit());
-            (*pac::RCC::ptr()).apb2enr.modify(|_, w| w.afioen().set_bit());
+            (*pac::RCC::ptr())
+                .apb1enr
+                .modify(|_, w| w.tim2en().set_bit());
+            (*pac::RCC::ptr())
+                .apb2enr
+                .modify(|_, w| w.afioen().set_bit());
             let _ = (*pac::RCC::ptr()).apb1enr.read(); // bus sync
         }
 
         // Circular DMA Buffer for CCR1 and CCR2 captures
-        static mut BUF: smt160_driver::hal::stm32f1_dma::Smt160DmaBuffer<100> = 
+        static mut BUF: smt160_driver::hal::stm32f1_dma::Smt160DmaBuffer<100> =
             smt160_driver::hal::stm32f1_dma::Smt160DmaBuffer::new();
 
         let channels = cx.device.DMA1.split();
         defmt::info!("DMA Initialized");
 
         // TIM2_CH1 DMA request is on DMA1 Channel 5
-        let hal = Stm32F1DmaHal::new(cx.device.TIM2, channels.5, unsafe {
-            &mut *core::ptr::addr_of_mut!(BUF)
-        }, 1, 100);
+        let hal = Stm32F1DmaHal::new(
+            cx.device.TIM2,
+            channels.5,
+            unsafe { &mut *core::ptr::addr_of_mut!(BUF) },
+            1,
+            100,
+        );
 
         let timer_freq = 1_000_000; // 1 MHz capture resolution
         let driver = Smt160Driver::new(hal, Config::industrial(), Mono::now())
@@ -103,7 +119,7 @@ mod app {
         defmt::info!("Watchdog Task Started");
         loop {
             Mono::delay(100.millis()).await;
-            
+
             // Read raw hardware state for diagnostics
             let tim2_cnt = unsafe { (*pac::TIM2::ptr()).cnt.read().bits() };
             let tim2_sr = unsafe { (*pac::TIM2::ptr()).sr.read().bits() };
@@ -118,9 +134,18 @@ mod app {
 
             defmt::info!(
                 "CNDTR:{} CNT:{} SR:{:#X} CCR1:{} CCR2:{} CCER:{:#X} DIER:{:#X} PSC:{} ARR:{} DMA_ISR:{:#X}",
-                dma_cndtr, tim2_cnt, tim2_sr, tim2_ccr1, tim2_ccr2, tim2_ccer, tim2_dier, tim2_psc, tim2_arr, dma_isr
+                dma_cndtr,
+                tim2_cnt,
+                tim2_sr,
+                tim2_ccr1,
+                tim2_ccr2,
+                tim2_ccer,
+                tim2_dier,
+                tim2_psc,
+                tim2_arr,
+                dma_isr
             );
- 
+
             cx.shared.driver.lock(|driver| {
                 if let Some(temp) = driver.read_temperature::<Mono>() {
                     defmt::info!("Watchdog Temp: {} °C", temp.to_num::<f32>());

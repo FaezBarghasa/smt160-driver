@@ -26,16 +26,19 @@ systick_monotonic!(Mono, 1_000);
 
 #[app(device = pac, dispatchers = [USART1])]
 mod app {
-    use stm32f1xx_hal::{pac, prelude::*};
-    use smt160_driver::hal::stm32f1_dma::{Stm32F1DmaHal, validate_clocks};
-    use smt160_driver::hal::Smt160Hal;
-    use smt160_driver::{Config, Ready, Smt160Driver, Smt160Status};
-    use rtic_monotonics::Monotonic;
     use super::Mono;
+    use rtic_monotonics::Monotonic;
+    use smt160_driver::hal::Smt160Hal;
+    use smt160_driver::hal::stm32f1_dma::{Stm32F1DmaHal, validate_clocks};
+    use smt160_driver::{Config, Ready, Smt160Driver, Smt160Status};
+    use stm32f1xx_hal::{pac, prelude::*};
 
     #[shared]
     struct Shared {
-        driver: Smt160Driver<Stm32F1DmaHal<'static, pac::TIM2, stm32f1xx_hal::dma::dma1::C5, 100>, Ready>,
+        driver: Smt160Driver<
+            Stm32F1DmaHal<'static, pac::TIM2, stm32f1xx_hal::dma::dma1::C5, 100>,
+            Ready,
+        >,
     }
 
     #[local]
@@ -46,7 +49,8 @@ mod app {
         let mut flash = cx.device.FLASH.constrain();
         let rcc = cx.device.RCC.constrain();
 
-        let clocks = rcc.cfgr
+        let clocks = rcc
+            .cfgr
             .use_hse(8.MHz())
             .sysclk(72.MHz())
             .pclk1(36.MHz())
@@ -78,13 +82,20 @@ mod app {
         // 50% duty cycle → ~38.3°C according to SMT160 formula
         ch1.set_duty(max_duty / 2);
         ch1.enable();
-        defmt::info!("PWM Generator: 1kHz, 50% duty on PA6 (max_duty={})", max_duty);
+        defmt::info!(
+            "PWM Generator: 1kHz, 50% duty on PA6 (max_duty={})",
+            max_duty
+        );
 
         // ---- Set up TIM2 DMA capture on PA0 ----
         unsafe {
             // Enable TIM2 and AFIO clocks
-            (*pac::RCC::ptr()).apb1enr.modify(|_, w| w.tim2en().set_bit());
-            (*pac::RCC::ptr()).apb2enr.modify(|_, w| w.afioen().set_bit());
+            (*pac::RCC::ptr())
+                .apb1enr
+                .modify(|_, w| w.tim2en().set_bit());
+            (*pac::RCC::ptr())
+                .apb2enr
+                .modify(|_, w| w.afioen().set_bit());
             let _ = (*pac::RCC::ptr()).apb1enr.read();
         }
 
@@ -94,9 +105,13 @@ mod app {
         let channels = cx.device.DMA1.split();
         defmt::info!("DMA Initialized");
 
-        let hal = Stm32F1DmaHal::new(cx.device.TIM2, channels.5, unsafe {
-            &mut *core::ptr::addr_of_mut!(BUF)
-        }, 1, 100);
+        let hal = Stm32F1DmaHal::new(
+            cx.device.TIM2,
+            channels.5,
+            unsafe { &mut *core::ptr::addr_of_mut!(BUF) },
+            1,
+            100,
+        );
 
         let timer_freq = 1_000_000; // 1 MHz capture resolution
         let driver = Smt160Driver::new(hal, Config::industrial(), Mono::now())
@@ -133,7 +148,13 @@ mod app {
 
             cx.shared.driver.lock(|driver| {
                 if let Some(temp) = driver.read_temperature::<Mono>() {
-                    defmt::info!("Temp: {:.2} °C | CNDTR: {} | SR: {:#X} | CNT: {}", temp.to_num::<f32>(), cndtr, sr, cnt);
+                    defmt::info!(
+                        "Temp: {:.2} °C | CNDTR: {} | SR: {:#X} | CNT: {}",
+                        temp.to_num::<f32>(),
+                        cndtr,
+                        sr,
+                        cnt
+                    );
                 } else {
                     defmt::info!("No data | CNDTR: {} | SR: {:#X} | CNT: {}", cndtr, sr, cnt);
                 }

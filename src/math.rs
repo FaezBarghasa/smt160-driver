@@ -1,18 +1,18 @@
 //! High-precision, fixed-point mathematical core for SMT160 signal processing.
 //!
-//! This module is decoupled from hardware registers to enable full property-based 
-//! testing on host machines. It uses the `fixed` crate to provide deterministic 
+//! This module is decoupled from hardware registers to enable full property-based
+//! testing on host machines. It uses the `fixed` crate to provide deterministic
 //! results without a hardware FPU.
 
-use fixed::types::I32F32;
 use crate::error::Smt160Error;
+use fixed::types::I32F32;
 
 /// Stateless signal decoder for converting timer ticks into temperature.
 pub struct SignalDecoder;
 
 impl SignalDecoder {
     /// SMT160 Transfer Function: T = (DutyCycle - 0.320) / 0.00470
-    /// 
+    ///
     /// Pre-calculated constants for maximum performance (branchless paths):
     /// - OFFSET: 0.320
     /// - INVERSE_STEP: 1 / 0.00470 ≈ 212.7659574468
@@ -22,7 +22,7 @@ impl SignalDecoder {
     /// Decodes raw timer ticks into a fixed-point temperature value.
     ///
     /// # Mathematical Safety
-    /// This function uses checked arithmetic and boundary validation to ensure 
+    /// This function uses checked arithmetic and boundary validation to ensure
     /// it never panics, even with malicious or corrupt hardware input.
     #[inline(always)]
     pub fn decode(period_ticks: u64, active_ticks: u64) -> Result<I32F32, Smt160Error> {
@@ -37,12 +37,12 @@ impl SignalDecoder {
         }
 
         // Calculate Duty Cycle: DC = active / period
-        // We use I64F64 for intermediate calculation to prevent overflow 
+        // We use I64F64 for intermediate calculation to prevent overflow
         // when converting u32 ticks > 2^31 into a signed fixed-point type.
         use fixed::types::I64F64;
         let active_fp = I64F64::from_num(active_ticks);
         let period_fp = I64F64::from_num(period_ticks);
-        
+
         // Division is safe because period_fp >= 1 (since period_ticks > 0)
         let dc: I32F32 = (active_fp / period_fp).to_num();
 
@@ -66,20 +66,38 @@ impl SignalDecoder {
 
     /// The default NLC table for standard SMT160 sensors.
     pub const DEFAULT_NLC_TABLE: &[(I32F32, I32F32)] = &[
-        (I32F32::from_bits(-128849018880), I32F32::from_bits(-130137505792)), // -30.0 -> -30.3
-        (I32F32::from_bits(0), I32F32::from_bits(0)),                        // 0.0 -> 0.0
-        (I32F32::from_bits(107374182400), I32F32::from_bits(107374182400)),   // 25.0 -> 25.0
-        (I32F32::from_bits(343597383680), I32F32::from_bits(341020410060)),  // 80.0 -> 79.4
-        (I32F32::from_bits(515396075520), I32F32::from_bits(511099977728)),  // 120.0 -> 119.0
+        (
+            I32F32::from_bits(-128849018880),
+            I32F32::from_bits(-130137505792),
+        ), // -30.0 -> -30.3
+        (I32F32::from_bits(0), I32F32::from_bits(0)), // 0.0 -> 0.0
+        (
+            I32F32::from_bits(107374182400),
+            I32F32::from_bits(107374182400),
+        ), // 25.0 -> 25.0
+        (
+            I32F32::from_bits(343597383680),
+            I32F32::from_bits(341020410060),
+        ), // 80.0 -> 79.4
+        (
+            I32F32::from_bits(515396075520),
+            I32F32::from_bits(511099977728),
+        ), // 120.0 -> 119.0
     ];
 
     /// Applies NLC using a custom lookup table.
     pub fn apply_nlc_custom(raw_temp: I32F32, table: &[(I32F32, I32F32)]) -> I32F32 {
-        if table.is_empty() { return raw_temp; }
+        if table.is_empty() {
+            return raw_temp;
+        }
 
         // Boundary checks for extrapolation (clamping to extremes)
-        if raw_temp <= table[0].0 { return table[0].1; }
-        if raw_temp >= table[table.len() - 1].0 { return table[table.len() - 1].1; }
+        if raw_temp <= table[0].0 {
+            return table[0].1;
+        }
+        if raw_temp >= table[table.len() - 1].0 {
+            return table[table.len() - 1].1;
+        }
 
         // Linear interpolation between table points
         for i in 0..table.len() - 1 {
@@ -98,9 +116,9 @@ impl SignalDecoder {
     }
 
     /// Applies an adaptive EWMA filter based on temperature deviation and startup state.
-    /// 
+    ///
     /// # Alpha Selection Logic
-    /// - **Fast Track (α=0.8)**: Used if deviation > 5°C or during the first 16 samples. 
+    /// - **Fast Track (α=0.8)**: Used if deviation > 5°C or during the first 16 samples.
     ///   Ensures rapid response to thermal events or system startup.
     /// - **Steady State (α=0.1)**: Used for high-precision noise rejection once stabilized.
     #[inline(always)]
@@ -124,7 +142,7 @@ impl SignalDecoder {
 
         // Y_n = alpha * X_n + (1 - alpha) * Y_{n-1}
         let one_minus_alpha = I32F32::from_num(1) - alpha;
-        
+
         let term1 = alpha.saturating_mul(current);
         let term2 = one_minus_alpha.saturating_mul(last_val);
         term1.saturating_add(term2)
@@ -155,9 +173,9 @@ mod verification {
     fn verify_decode_no_panic() {
         let period: u32 = kani::any();
         let active: u32 = kani::any();
-        
+
         // Kani will explore all values from 0 to u32::MAX for both `period` and `active`.
-        // This ensures no combination of input pulse widths can cause division-by-zero 
+        // This ensures no combination of input pulse widths can cause division-by-zero
         // or intermediate overflow inside the decode function.
         let _ = SignalDecoder::decode(period as u64, active as u64);
     }
@@ -168,8 +186,8 @@ mod verification {
         let last_val: I32F32 = I32F32::from_bits(kani::any());
         let last: Option<I32F32> = if kani::any() { Some(last_val) } else { None };
         let count: u32 = kani::any();
-        
-        // Adaptive filter should never panic or overflow internally 
+
+        // Adaptive filter should never panic or overflow internally
         // given its weighted average nature.
         let _ = SignalDecoder::apply_adaptive_filter(current, last, count);
     }

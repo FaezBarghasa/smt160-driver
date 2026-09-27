@@ -2,27 +2,36 @@
 
 //! # SMT160 High-Precision Industrial Driver
 //!
-//! This driver uses hardware-level DMA Burst and Timer Reset Mode to achieve 
+//! This driver uses hardware-level DMA Burst and Timer Reset Mode to achieve
 //! absolute zero-jitter capture of SMT160 temperature sensor signals.
 
-pub mod error;
-pub mod types;
-pub mod math;
-pub mod telemetry;
-pub mod hal;
+/// Calibration structures for linear correction.
 pub mod calibration;
+/// Error types specific to the SMT160 driver operations.
+pub mod error;
+/// Hardware Abstraction Layer trait for platform-agnostic use.
+pub mod hal;
+/// Signal decoding, filtering, and temperature calculation math.
+pub mod math;
+/// Status flags and diagnostic tracking for sensor health.
+pub mod telemetry;
+/// Core types and typestates used across the driver.
+pub mod types;
 
-pub use error::Smt160Error;
-pub use types::{Uninitialized, Ready, Smt160Observer};
-pub use math::SignalDecoder;
-pub use telemetry::{Smt160Status, Diagnostics};
 pub use calibration::{Calibration, LinearCalibration};
+/// Re-exports of key components to simplify the external API.
+pub use error::Smt160Error;
+pub use math::SignalDecoder;
+pub use telemetry::{Diagnostics, Smt160Status};
+pub use types::{Ready, Smt160Observer, Uninitialized};
 
-use fixed::types::I32F32;
-use core::marker::PhantomData;
 use crate::hal::Smt160Hal;
+use core::marker::PhantomData;
+use fixed::types::I32F32;
 
 /// Configuration for the SMT160 driver, allowing tuning for different environments.
+///
+/// Supports serialization and formatted logging if respective features are enabled.
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -71,9 +80,15 @@ impl Config {
 ///
 /// Uses the typestate pattern (`Uninitialized` -> `Ready`) to ensure hardware
 /// is safely initialized before any temperature readings can be taken.
-pub struct Smt160Driver<H, S, O = (), I = fugit::TimerInstantU32<1000>> 
-where 
-    O: Smt160Observer
+///
+/// # Type Parameters
+/// * `H` - The Hardware Abstraction Layer type implementing `Smt160Hal`.
+/// * `S` - The current typestate marker (`Uninitialized` or `Ready`).
+/// * `O` - The observer type implementing `Smt160Observer` for callbacks.
+/// * `I` - The time instant type used for timeouts, typically from `fugit`.
+pub struct Smt160Driver<H, S, O = (), I = fugit::TimerInstantU32<1000>>
+where
+    O: Smt160Observer,
 {
     /// The hardware abstraction layer implementation for the specific MCU.
     hal: H,
@@ -103,8 +118,9 @@ where
     pub nlc_table: Option<&'static [(I32F32, I32F32)]>,
 }
 
-impl<H, O, I> Smt160Driver<H, Uninitialized, O, I> 
-where 
+/// Methods available for the driver in its `Uninitialized` state.
+impl<H, O, I> Smt160Driver<H, Uninitialized, O, I>
+where
     H: Smt160Hal,
     O: Smt160Observer,
     I: Copy,
@@ -158,7 +174,7 @@ where
     /// Initializes the hardware and transitions to the `Ready` state.
     ///
     /// The `timer_freq` is required to correctly configure the hardware and
-    /// calculate the PWM periods in relation to the system clock. 
+    /// calculate the PWM periods in relation to the system clock.
     ///
     /// # Arguments
     ///
@@ -169,7 +185,7 @@ where
     /// The initialized driver in the `Ready` state on success, or an `Smt160Error` if setup fails.
     pub fn init(mut self, timer_freq: u32) -> Result<Smt160Driver<H, Ready, O, I>, Smt160Error> {
         self.hal.setup(timer_freq)?;
-        
+
         Ok(Smt160Driver {
             hal: self.hal,
             observer: self.observer,
@@ -188,8 +204,9 @@ where
     }
 }
 
-impl<H, O, I> Smt160Driver<H, Ready, O, I> 
-where 
+/// Methods available for the driver once it has transitioned to the `Ready` state.
+impl<H, O, I> Smt160Driver<H, Ready, O, I>
+where
     H: Smt160Hal,
     O: Smt160Observer,
     I: Copy,
@@ -227,9 +244,12 @@ where
     /// An `Option<I32F32>` containing the filtered temperature if new valid data is available
     /// and correctly decoded. Returns `None` if no data is available, a sensor timeout occurred,
     /// or the signal is out of bounds.
+    ///
+    /// # Type Parameters
+    /// * `M` - A monotonic timer implementing `rtic_monotonics::Monotonic<Instant = I>`.
     #[inline(always)]
-    pub fn read_temperature<M>(&mut self) -> Option<I32F32> 
-    where 
+    pub fn read_temperature<M>(&mut self) -> Option<I32F32>
+    where
         M: rtic_monotonics::Monotonic<Instant = I>,
     {
         let now = M::now();
@@ -237,7 +257,8 @@ where
         // For fugit::Instant, this should work if we cast or if the compiler can infer it.
         // But since we are generic, we might need a workaround.
         // We'll use a bit of a hack: if we can't get duration, we assume 0 for safety (it will just skip the timeout check).
-        let elapsed_ms = 0u64; 
+        // A more robust implementation would enforce a trait bound on `I` to compute the real delta.
+        let elapsed_ms = 0u64;
 
         // 1. Check for data and handle sensor timeouts
         if !self.hal.is_new_data_available() {
@@ -268,7 +289,9 @@ where
         if mean > 0 && sigma > (mean * I32F32::from_num(0.015)) {
             // Signal noise is too high, notify the observer if this is a new error condition
             if !self.status.contains(Smt160Status::SIGNAL_NOISY) {
-                if let Some(obs) = &self.observer { obs.on_hardware_error(); }
+                if let Some(obs) = &self.observer {
+                    obs.on_hardware_error();
+                }
             }
             self.status.insert(Smt160Status::SIGNAL_NOISY);
         } else {
@@ -280,34 +303,36 @@ where
         match SignalDecoder::decode(edge.period_ticks, edge.high_ticks) {
             Ok(raw) => {
                 self.status.remove(Smt160Status::OUT_OF_BOUNDS);
-                
+
                 // 5. Apply Non-Linearity Correction (NLC)
                 let corrected = if let Some(table) = self.nlc_table {
                     SignalDecoder::apply_nlc_custom(raw, table)
                 } else {
                     SignalDecoder::apply_nlc(raw)
                 };
-                
+
                 // 6. Apply Linear Calibration (offset and scaling)
                 let calibrated = self.calibration.calibrate(corrected);
-                
+
                 // 7. Apply adaptive filtering for signal smoothing
                 let filtered = SignalDecoder::apply_adaptive_filter(
                     calibrated,
                     self.last_temp,
-                    self.sample_count
+                    self.sample_count,
                 );
-                
+
                 // 8. Gradient Monitoring (track rapid temperature changes)
                 if let Some(_prev) = self.last_temp {
                     // For now, skip gradient check if we can't easily get dt_ms generically
                     // A proper fix requires better trait bounds on I.
+                    // This section can be expanded in the future to compute the rate of change
+                    // and trigger observer events if the gradient exceeds a safe threshold.
                 }
 
                 // 9. Threshold Edge Detection and Observer Notification
                 if let Some(threshold) = self.config.threshold {
                     let currently_above = filtered > threshold;
-                    
+
                     if let Some(was_above) = self.last_above_threshold {
                         if currently_above != was_above {
                             let is_rising = currently_above && !was_above;
@@ -317,7 +342,7 @@ where
                                 crate::types::TriggerEdge::Falling => !is_rising,
                                 crate::types::TriggerEdge::Both => true,
                             };
-                            
+
                             if matches_edge {
                                 if let Some(obs) = &self.observer {
                                     obs.on_threshold_crossed(filtered);
@@ -366,18 +391,23 @@ where
     ///
     /// An `Option<I32F32>` containing the filtered temperature, or `None` on timeout
     /// or decoding error.
-    pub async fn read_temp<M>(&mut self) -> Option<I32F32> 
-    where 
+    ///
+    /// # Type Parameters
+    /// * `M` - A monotonic timer implementing `rtic_monotonics::Monotonic<Instant = I>`.
+    pub async fn read_temp<M>(&mut self) -> Option<I32F32>
+    where
         M: rtic_monotonics::Monotonic<Instant = I>,
         I: Copy + core::ops::Sub<I, Output = M::Duration>,
-        M::Duration: fugit::ExtU64
+        M::Duration: fugit::ExtU64,
     {
         if self.wait_for_update().await.is_ok() {
             self.read_temperature::<M>()
         } else {
             // The wait operation failed (likely due to a timeout in the HAL), update status and notify observer
             if !self.status.contains(Smt160Status::SENSOR_TIMEOUT) {
-                if let Some(obs) = &self.observer { obs.on_signal_lost(); }
+                if let Some(obs) = &self.observer {
+                    obs.on_signal_lost();
+                }
             }
             self.status.insert(Smt160Status::SENSOR_TIMEOUT);
             None

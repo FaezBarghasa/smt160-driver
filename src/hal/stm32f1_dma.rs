@@ -1,9 +1,9 @@
 use crate::error::Smt160Error;
-use crate::hal::{Smt160Hal, CapturedEdge};
+use crate::hal::{CapturedEdge, Smt160Hal};
+use core::sync::atomic::Ordering;
+use portable_atomic::AtomicU32;
 use stm32f1xx_hal::pac;
 use stm32f1xx_hal::rcc::Clocks;
-use portable_atomic::AtomicU32;
-use core::sync::atomic::Ordering;
 
 /// Validates that the APB1 clock is running at least at 8 MHz.
 /// This is the absolute minimum resolution (125ns/tick) required to
@@ -19,7 +19,7 @@ pub fn validate_clocks(clocks: &Clocks) -> Result<(), Smt160Error> {
 
 /// Trivial wrapper around the DMA buffer to allow zero-copy access from the driver.
 ///
-/// This struct ensures that the raw [u32; N] buffer is correctly aligned and 
+/// This struct ensures that the raw [u32; N] buffer is correctly aligned and
 /// can be safely viewed as a sequence of `CapturedEdge` records.
 #[repr(C, align(4))]
 pub struct Smt160DmaBuffer<const N: usize> {
@@ -38,7 +38,7 @@ impl<const N: usize> Smt160DmaBuffer<N> {
     }
 
     /// Returns a reference to the captured edge at the specified index.
-    /// 
+    ///
     /// Each burst capture transfers 2 words: CCR1 (Period) and CCR2 (High Time).
     #[inline(always)]
     pub fn get_edge(&self, index: usize) -> CapturedEdge {
@@ -54,13 +54,13 @@ impl<const N: usize> Smt160DmaBuffer<N> {
 use embassy_sync::waitqueue::AtomicWaker;
 
 /// Optimized HAL for STM32F103C8T6 (BluePill).
-/// 
+///
 /// Recommended Pin Mappings for BluePill:
 /// - TIM2: PA0 (CH1), PA1 (CH2)
 /// - TIM3: PA6 (CH1), PA7 (CH2)
 /// - TIM4: PB6 (CH1), PB7 (CH2)
-pub struct Stm32F1DmaHal<'a, TIM, DMA, const N: usize> 
-where 
+pub struct Stm32F1DmaHal<'a, TIM, DMA, const N: usize>
+where
     TIM: Smt160TimerInstance,
     DMA: Smt160DmaChannel,
 {
@@ -73,16 +73,22 @@ where
     overflow_count: AtomicU32,
 }
 
-impl<'a, TIM, DMA, const N: usize> Stm32F1DmaHal<'a, TIM, DMA, N> 
-where 
+impl<'a, TIM, DMA, const N: usize> Stm32F1DmaHal<'a, TIM, DMA, N>
+where
     TIM: Smt160TimerInstance,
     DMA: Smt160DmaChannel,
 {
     /// Creates a new STM32F1 DMA adapter for a specific timer channel (1 or 3).
-    pub fn new(timer: TIM, dma: DMA, buffer: &'a mut Smt160DmaBuffer<N>, timer_channel: u8, buffer_len: u16) -> Self {
-        Self { 
-            timer, 
-            dma, 
+    pub fn new(
+        timer: TIM,
+        dma: DMA,
+        buffer: &'a mut Smt160DmaBuffer<N>,
+        timer_channel: u8,
+        buffer_len: u16,
+    ) -> Self {
+        Self {
+            timer,
+            dma,
             buffer,
             waker: AtomicWaker::new(),
             timer_channel,
@@ -103,7 +109,7 @@ where
 }
 
 impl<'a, TIM, DMA, const N: usize> Smt160Hal for Stm32F1DmaHal<'a, TIM, DMA, N>
-where 
+where
     TIM: Smt160TimerInstance,
     DMA: Smt160DmaChannel,
 {
@@ -130,12 +136,9 @@ where
             let dmar_ptr = self.timer.dmar_address();
             #[cfg(feature = "defmt")]
             defmt::info!("DMA Debug: Pointing to DMAR at {:#X}", dmar_ptr);
-            
-            self.dma.setup_circular_capture(
-                dmar_ptr,
-                self.buffer.as_mut_ptr(),
-                self.buffer_len
-            );
+
+            self.dma
+                .setup_circular_capture(dmar_ptr, self.buffer.as_mut_ptr(), self.buffer_len);
         }
 
         // 7. Generate update event to load PSC and ARR into active registers
@@ -166,8 +169,8 @@ where
         // Read CNDTR to find the most recent sample
         let cndtr = self.dma.get_cndtr();
         let elements_written = self.buffer_len - cndtr as u16;
-        
-        // Each edge consists of a 2-word burst. 
+
+        // Each edge consists of a 2-word burst.
         // We only want to read the last fully completed 2-word pair.
         let full_edges_written = elements_written / 2;
         let edge_idx = if full_edges_written == 0 {
@@ -175,8 +178,8 @@ where
         } else {
             full_edges_written.saturating_sub(1)
         };
-        
-        let edge = self.buffer.get_edge(edge_idx as usize); 
+
+        let edge = self.buffer.get_edge(edge_idx as usize);
         self.dma.clear_interrupt_flags();
         edge
     }
@@ -214,10 +217,10 @@ where
 pub trait Smt160TimerInstance {
     /// Configures the timer for PWM Input mode on the specified channel pair.
     fn setup_pwm_input(&self, channel: u8);
-    
+
     /// Configures the DMA Burst (DMAR) to fetch capture registers for the given channel.
     fn setup_dma_burst(&self, channel: u8);
-    
+
     /// Returns the physical address of the Timer's DMA Burst (DMAR) register.
     fn dmar_address(&self) -> u32;
 
@@ -246,23 +249,23 @@ pub trait Smt160TimerInstance {
 /// Trait representing a DMA Channel mapped to a Timer event.
 pub trait Smt160DmaChannel {
     /// Configures the DMA channel for circular transfers.
-    /// 
+    ///
     /// # Safety
     /// `memory_addr` must point to a valid, pinned buffer.
     unsafe fn setup_circular_capture(&self, peripheral_addr: u32, memory_addr: *mut u32, len: u16);
-    
+
     /// Clears all interrupt flags.
     fn clear_interrupt_flags(&self);
-    
+
     /// Checks if the Half Transfer flag is set.
     fn is_half_transfer(&self) -> bool;
-    
+
     /// Checks if the Transfer Complete flag is set.
     fn is_transfer_complete(&self) -> bool;
-    
+
     /// Disables the DMA channel.
     fn disable(&self);
-    
+
     /// Returns the current value of the CNDTR register.
     fn get_cndtr(&self) -> u32;
 }
@@ -290,10 +293,14 @@ macro_rules! impl_smt160_timer {
                         // CCER: CC1 rising edge, CC2 falling edge, both enabled
                         // Using write to guarantee no stale bits from other channels.
                         self.ccer.write(|w| {
-                            w.cc1p().clear_bit()  // CC1: non-inverted (rising edge)
-                             .cc1e().set_bit()     // CC1: enable
-                             .cc2p().set_bit()     // CC2: inverted (falling edge)
-                             .cc2e().set_bit()     // CC2: enable
+                            w.cc1p()
+                                .clear_bit() // CC1: non-inverted (rising edge)
+                                .cc1e()
+                                .set_bit() // CC1: enable
+                                .cc2p()
+                                .set_bit() // CC2: inverted (falling edge)
+                                .cc2e()
+                                .set_bit() // CC2: enable
                         });
 
                         // SMCR: Slave mode reset on TI1FP1 rising edge
@@ -306,10 +313,14 @@ macro_rules! impl_smt160_timer {
                         self.ccmr2_input().write(|w| w.cc3s().ti3().cc4s().ti3());
 
                         self.ccer.write(|w| {
-                            w.cc3p().clear_bit()
-                             .cc3e().set_bit()
-                             .cc4p().set_bit()
-                             .cc4e().set_bit()
+                            w.cc3p()
+                                .clear_bit()
+                                .cc3e()
+                                .set_bit()
+                                .cc4p()
+                                .set_bit()
+                                .cc4e()
+                                .set_bit()
                         });
 
                         // Note: STM32F1 Slave Mode Reset only supports TI1FP1 and TI2FP2.
@@ -323,13 +334,15 @@ macro_rules! impl_smt160_timer {
                 match channel {
                     1 => {
                         // DCR: DBA=13 (CCR1 offset), DBL=1 (2 transfers: CCR1 + CCR2)
-                        self.dcr.write(|w| unsafe { w.dba().bits(13).dbl().bits(1) });
+                        self.dcr
+                            .write(|w| unsafe { w.dba().bits(13).dbl().bits(1) });
                         // DIER: enable CC1 DMA request (triggers burst on each capture)
                         self.dier.write(|w| w.cc1de().set_bit());
                     }
                     3 => {
                         // DCR: DBA=15 (CCR3 offset), DBL=1 (2 transfers: CCR3 + CCR4)
-                        self.dcr.write(|w| unsafe { w.dba().bits(15).dbl().bits(1) });
+                        self.dcr
+                            .write(|w| unsafe { w.dba().bits(15).dbl().bits(1) });
                         // DIER: enable CC3 DMA request
                         self.dier.write(|w| w.cc3de().set_bit());
                     }
@@ -407,7 +420,7 @@ macro_rules! impl_smt160_dma {
                     let par_ptr = (ch_base + 0x08) as *mut u32;
                     let mar_ptr = (ch_base + 0x0C) as *mut u32;
 
-                    // SAFETY: Direct register access for DMA channel configuration. 
+                    // SAFETY: Direct register access for DMA channel configuration.
                     // This is safe because the HAL has exclusive ownership of the channel.
                     unsafe {
                         // 1. Disable channel and wait for it to stop
@@ -432,13 +445,13 @@ macro_rules! impl_smt160_dma {
                         core::ptr::write_volatile(dma_isr_base as *mut u32, 0xF << ($offset * 4));
                     }
                 }
-                
+
                 fn is_half_transfer(&self) -> bool {
                     // SAFETY: Reading DMA ISR status flags is safe.
                     let dma_isr = unsafe { (*pac::$PAC_PERIPH::ptr()).isr.read().bits() };
                     (dma_isr & (1 << (($offset * 4) + 2))) != 0 // HTIFx is bit 2 of the 4-bit block
                 }
-                
+
                 fn is_transfer_complete(&self) -> bool {
                     // SAFETY: Reading DMA ISR status flags is safe.
                     let dma_isr = unsafe { (*pac::$PAC_PERIPH::ptr()).isr.read().bits() };
@@ -452,7 +465,7 @@ macro_rules! impl_smt160_dma {
                         core::ptr::write_volatile(ch_base as *mut u32, core::ptr::read_volatile(ch_base as *mut u32) & !1);
                     }
                 }
-                
+
                 fn get_cndtr(&self) -> u32 {
                     let ch_base = 0x40020000 + 0x08 + ($offset * 0x14);
                     unsafe { core::ptr::read_volatile((ch_base + 0x04) as *const u32) }
@@ -462,8 +475,12 @@ macro_rules! impl_smt160_dma {
     }
 }
 
-impl_smt160_dma!(dma1, DMA1, C1, ch1, 0, C2, ch2, 1, C3, ch3, 2, C4, ch4, 3, C5, ch5, 4, C6, ch6, 5, C7, ch7, 6);
+impl_smt160_dma!(
+    dma1, DMA1, C1, ch1, 0, C2, ch2, 1, C3, ch3, 2, C4, ch4, 3, C5, ch5, 4, C6, ch6, 5, C7, ch7, 6
+);
 
 // Support DMA2 for High-density devices (TIM5, TIM8, etc.)
 #[cfg(feature = "high")]
-impl_smt160_dma!(dma2, DMA2, C1, ch1, 0, C2, ch2, 1, C3, ch3, 2, C4, ch4, 3, C5, ch5, 4);
+impl_smt160_dma!(
+    dma2, DMA2, C1, ch1, 0, C2, ch2, 1, C3, ch3, 2, C4, ch4, 3, C5, ch5, 4
+);

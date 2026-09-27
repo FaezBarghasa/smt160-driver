@@ -2,18 +2,18 @@ use bitflags::bitflags;
 
 bitflags! {
     /// Industrial telemetry status for the SMT160 driver.
-    /// 
-    /// These flags allow the application layer to monitor the electrical 
+    ///
+    /// These flags allow the application layer to monitor the electrical
     /// health of the sensor connection and the signal integrity.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
     pub struct Smt160Status: u8 {
         /// Signal jitter exceeds 0.5% threshold. Indicates EMI or loose wiring.
         const JITTER_DETECTED = 1 << 0;
-        
+
         /// Measurement is outside physical bounds (-45°C to 130°C).
         const OUT_OF_BOUNDS  = 1 << 1;
-        
+
         /// Sensor pulse not detected for > 5ms. Indicates disconnection or hardware freeze.
         const SENSOR_TIMEOUT  = 1 << 2;
 
@@ -38,12 +38,12 @@ impl defmt::Format for Smt160Status {
 
 use fixed::types::I32F32;
 
-use portable_atomic::{AtomicU32, AtomicU64};
 use core::sync::atomic::Ordering;
+use portable_atomic::{AtomicU32, AtomicU64};
 
 /// Diagnostic metrics for monitoring sensor health.
 ///
-/// Uses Welford's online algorithm with atomic updates to allow 
+/// Uses Welford's online algorithm with atomic updates to allow
 /// concurrent health monitoring without locking.
 pub struct Diagnostics {
     pub mean_ticks: AtomicU64, // bits of I32F32
@@ -56,9 +56,9 @@ pub struct Diagnostics {
 
 impl Diagnostics {
     pub fn new() -> Self {
-        Self { 
-            mean_ticks: AtomicU64::new(0), 
-            m2_ticks: AtomicU64::new(0), 
+        Self {
+            mean_ticks: AtomicU64::new(0),
+            m2_ticks: AtomicU64::new(0),
             count: AtomicU32::new(0),
             min_ticks: AtomicU32::new(u32::MAX),
             max_ticks: AtomicU32::new(0),
@@ -71,7 +71,12 @@ impl Diagnostics {
         // Update Min/Max (not strictly atomic across whole struct but safe for individual fields)
         let mut current_min = self.min_ticks.load(Ordering::Relaxed);
         while ticks < current_min {
-            match self.min_ticks.compare_exchange_weak(current_min, ticks, Ordering::Relaxed, Ordering::Relaxed) {
+            match self.min_ticks.compare_exchange_weak(
+                current_min,
+                ticks,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
                 Ok(_) => break,
                 Err(new_min) => current_min = new_min,
             }
@@ -79,7 +84,12 @@ impl Diagnostics {
 
         let mut current_max = self.max_ticks.load(Ordering::Relaxed);
         while ticks > current_max {
-            match self.max_ticks.compare_exchange_weak(current_max, ticks, Ordering::Relaxed, Ordering::Relaxed) {
+            match self.max_ticks.compare_exchange_weak(
+                current_max,
+                ticks,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
                 Ok(_) => break,
                 Err(new_max) => current_max = new_max,
             }
@@ -87,25 +97,29 @@ impl Diagnostics {
 
         let count = self.count.fetch_add(1, Ordering::Relaxed) + 1;
         let x = I32F32::from_num(ticks);
-        
+
         // Atomic Welford's Update (simplified to critical section for consistency of mean/m2)
         critical_section::with(|_| {
             let mean_bits = self.mean_ticks.load(Ordering::Relaxed);
             let m2_bits = self.m2_ticks.load(Ordering::Relaxed);
-            
+
             let mut mean = I32F32::from_bits(mean_bits as i64);
             let mut m2 = I32F32::from_bits(m2_bits as i64);
-            
+
             let delta = x - mean;
             mean += delta / I32F32::from_num(count);
             let delta2 = x - mean;
             m2 += delta * delta2;
-            
-            self.mean_ticks.store(mean.to_bits() as u64, Ordering::Relaxed);
+
+            self.mean_ticks
+                .store(mean.to_bits() as u64, Ordering::Relaxed);
             self.m2_ticks.store(m2.to_bits() as u64, Ordering::Relaxed);
         });
 
-        self.histogram.update(ticks, I32F32::from_bits(self.mean_ticks.load(Ordering::Relaxed) as i64));
+        self.histogram.update(
+            ticks,
+            I32F32::from_bits(self.mean_ticks.load(Ordering::Relaxed) as i64),
+        );
     }
 
     /// Returns the variance of captured ticks.
@@ -147,7 +161,7 @@ impl Diagnostics {
 }
 
 /// A compact histogram tracking period jitter distribution.
-/// 
+///
 /// Buckets represent deviation from the mean in clock ticks.
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -164,17 +178,26 @@ impl JitterHistogram {
 
     pub fn update(&mut self, ticks: u32, mean: I32F32) {
         let diff = (I32F32::from_num(ticks) - mean).to_num::<i32>();
-        let bucket = if diff < -20 { 0 }
-        else if diff < -10 { 1 }
-        else if diff < -5 { 2 }
-        else if diff < -1 { 3 }
-        else if diff <= 1 { 4 }
-        else if diff <= 5 { 5 }
-        else if diff <= 10 { 6 }
-        else if diff <= 20 { 7 }
-        else { 8 };
+        let bucket = if diff < -20 {
+            0
+        } else if diff < -10 {
+            1
+        } else if diff < -5 {
+            2
+        } else if diff < -1 {
+            3
+        } else if diff <= 1 {
+            4
+        } else if diff <= 5 {
+            5
+        } else if diff <= 10 {
+            6
+        } else if diff <= 20 {
+            7
+        } else {
+            8
+        };
 
         self.counts[bucket as usize] = self.counts[bucket as usize].saturating_add(1);
     }
 }
-
